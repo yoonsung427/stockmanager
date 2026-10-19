@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stockmanager"
+version = "0.1.0"
+description = "Semi-autonomous mock portfolio manager (no real money, no brokerage)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml",
+    "aiohttp",
+    "discord.py",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+    "types-PyYAML",
+    "uvicorn",
+]
+
+[project.scripts]
+stockmanager = "stockmanager.cli:main"
+
+[project.urls]
+Repository = "https://github.com/yoonsung/stockmanager"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

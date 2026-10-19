@@ -1,0 +1,68 @@
+{
+  "chart": {
+    "error": null,
+    "result": [
+      {
+        "meta": {
+          "currency": "USD",
+          "symbol": "AAPL",
+          "exchangeName": "NMS",
+          "instrumentType": "EQUITY",
+          "exchangeTimezoneName": "America/New_York",
+          "regularMarketPrice": 263.2175,
+          "chartPreviousClose": 261.75,
+          "gmtoffset": -14400,
+          "timezone": "EDT"
+        },
+        "timestamp": [
+          1791811800,
+          1791898200,
+          1791984600,
+          1792071000,
+          1792157400
+        ],
+        "indicators": {
+          "quote": [
+            {
+              "open": [
+                254.1,
+                258.5,
+                null,
+                259.0,
+                262.0
+              ],
+              "close": [
+                258.4,
+                260.05,
+                null,
+                261.75,
+                263.2175
+              ],
+              "high": [
+                260.0,
+                261.0,
+                null,
+                262.5,
+                264.0
+              ],
+              "low": [
+                253.0,
+                257.0,
+                null,
+                258.0,
+                261.0
+              ],
+              "volume": [
+                1000,
+                1100,
+                null,
+                1200,
+                1300
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
