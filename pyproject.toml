@@ -13,6 +13,7 @@ dependencies = [
     "pyyaml",
     "aiohttp",
     "discord.py",
+    "psutil",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +23,7 @@ dev = [
     "ruff",
     "mypy",
     "types-PyYAML",
+    "types-psutil",
     "uvicorn",
 ]
 

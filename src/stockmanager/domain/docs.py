@@ -99,6 +99,7 @@ class Trade(_Doc):
     fill_price: Decimal = Field(gt=0)
     cost: Decimal = Field(ge=0)
     price_source: PriceSource
+    thesis: str = ""
 
     @field_validator("shares", "fill_price", "cost")
     @classmethod
@@ -107,8 +108,11 @@ class Trade(_Doc):
 
 
 class PortfolioDoc(_Doc):
-    """``portfolio.json``: the single source of truth."""
+    """``portfolio.json``: the single source of truth (AS §3.1)."""
 
+    schema_version: int = Field(default=1, ge=1)
+    rev: int = Field(default=0, ge=0)
+    updated_at: datetime | None = None
     start_cash: Decimal = Field(ge=0)
     cash: Decimal = Field(ge=0)
     status: Status
