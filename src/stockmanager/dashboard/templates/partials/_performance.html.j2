@@ -1,6 +1,6 @@
 <section data-section="performance">
   <h2>Performance</h2>
-  {{ svg_line_chart([("Portfolio NAV", m.nav_history), ("Benchmark (rebased)", m.benchmark_history)], "Portfolio NAV vs benchmark") }}
+  {{ svg_line_chart([("Portfolio NAV", m.nav_history), ("Benchmark (rebased)", m.benchmark_history)], "Portfolio NAV vs benchmark") | safe }}
   <details>
     <summary>Data table</summary>
     <table>

@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "llm-prompts.md",
+                "file": "docs/user-manual.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "llm-prompts"
+              "title": "user-manual"
             }
           }
         ]
@@ -190,22 +190,24 @@
   },
   "active": "bc75abec0ab13fda",
   "lastOpenFiles": [
+    "workspace/dashboard/portfolio.json",
+    "workspace/dashboard/portfolio.html",
+    "llm-prompts.md",
+    "docs/user-manual.md",
+    "docs",
+    "workspace/state/bot_heartbeat.json",
+    "workspace/alerts/pending/20261020T1546575-3b1d6bdd.json",
+    "workspace/state/bot_cursor.json",
     "workspace/run-notes/20261020T152533-logrepair-evaluation-precheck.md",
     "workspace/trades.log",
     "workspace/portfolio.lock",
     "workspace/nav_history/2026-10-20.json",
     "workspace/nav_history",
     "workspace/state/scheduler.json.tmp",
-    "tests/unit/__pycache__/test_veto_receipts.cpython-314-pytest-9.1.1.pyc",
-    "tests/unit/test_veto_receipts.py",
-    "tests/support/channels.py",
-    "stockmanager-import-portfolio.py",
-    "workspace/state/scheduler.json",
     "CLAUDE.md",
     "stockmanager-handoff.md",
     "automated-portfolio-system-spec.md",
     "architecture-spec.md",
-    "llm-prompts.md",
     "build/lib/stockmanager/prompts/extractor/v1/system.md",
     "src/stockmanager/prompts/extractor/v1/system.md",
     "news-sources.md",
