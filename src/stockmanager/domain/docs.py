@@ -123,6 +123,7 @@ class PortfolioDoc(_Doc):
     trades: list[Trade] = Field(default_factory=list)
     config: dict[str, Any] = Field(default_factory=dict)
     closed_at: datetime | None = None
+    live_since: datetime | None = None
     final_report: dict[str, Any] | None = None
 
     @field_validator("start_cash", "cash")
