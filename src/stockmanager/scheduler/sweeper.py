@@ -1,21 +1,22 @@
 """Proposal sweeper (AS §1.5): idempotent convergence of every proposal, one transaction per tick.
 
-Deviation from the architecture spec: this build's ``ProposalDoc`` carries no ``delivery``/receipt field (AS §8.3),
-so the veto window is treated as opening on the first sweep after creation (an approximation of "delivered
-immediately") rather than being gated on a channel receipt.
+The veto window is receipt-driven (AS §8.3): a ``PROPOSED`` proposal moves to ``VETO_WINDOW`` only once the deliverer
+has appended a receipt from a visible channel to ``delivery.receipts``, and ``veto_deadline`` is that receipt's.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from collections.abc import Collection, Sequence
+from datetime import datetime
 
-from stockmanager.domain.docs import ProposalDoc, TransitionRecord
+from stockmanager.domain.docs import DeliveryReceipt, ProposalDoc, TransitionRecord
 from stockmanager.domain.proposal_state import ProposalState, can_transition, chain_hash, is_terminal
-from stockmanager.domain.timeutil import add_elapsed
-from stockmanager.notify.outbox import prepare
-from stockmanager.notify.templates import proposal_expired
+from stockmanager.notify.outbox import prepare, raised_dedupe_keys
+from stockmanager.notify.templates import proposal_expired, veto_window_open
 from stockmanager.store import FileStore
 from stockmanager.store.lock import Clock, LockBusy
+
+DEFAULT_VISIBLE_CHANNELS: tuple[str, ...] = ("discord",)
 
 
 def _transition(doc: ProposalDoc, to_state: ProposalState, actor: str, cause: str, at: datetime) -> ProposalDoc:
@@ -40,10 +41,23 @@ def _load_all_proposals(store: FileStore) -> list[ProposalDoc]:
     return out
 
 
+def _first_visible_receipt(doc: ProposalDoc, visible_channels: Sequence[str]) -> DeliveryReceipt | None:
+    """The first receipt in ``doc`` from a channel in ``visible_channels``, or ``None`` (AS §8.3 item 3)."""
+    return next((r for r in doc.delivery.receipts if r.channel in visible_channels), None)
+
+
 def _plan(
-    now: datetime, status: str, proposals: list[ProposalDoc]
+    now: datetime,
+    status: str,
+    proposals: list[ProposalDoc],
+    visible_channels: Sequence[str] = DEFAULT_VISIBLE_CHANNELS,
+    announced: Collection[str] = frozenset(),
 ) -> tuple[dict[str, ProposalDoc], dict[str, str], list[TransitionRecord]]:
-    """Pure sweeper rules over ``proposals``: the staged proposals, staged alert files and transitions to write."""
+    """Pure sweeper rules over ``proposals``: the staged proposals, staged alert files and transitions to write.
+
+    ``announced`` is every ``dedupe_key`` ever queued (pending, sent or dead); a ``PROPOSED`` proposal whose
+    ``veto_window_open:<id>`` is not in it gets that alert re-derived (AS §8.3 item 7).
+    """
     staged: dict[str, ProposalDoc] = {}
     alerts: dict[str, str] = {}
     written: list[TransitionRecord] = []
@@ -65,12 +79,25 @@ def _plan(
             continue  # a RECONFIRM replacement is not delivered and runs no clock until its job validates it (AS §8.7)
 
         if cur.state == "PROPOSED" and can_transition(cur.state, "VETO_WINDOW"):
-            deadline = add_elapsed(now, timedelta(hours=cur.veto_window_hours))
-            opened = cur.model_copy(update={"veto_deadline": deadline})
-            if cur.approval_mode == "auto" and deadline > cur.execute_at:
-                cur = apply(opened, "EXPIRED", "system:sweeper", "late_delivery")
+            receipt = _first_visible_receipt(cur, visible_channels)
+            if receipt is None:
+                key = f"veto_window_open:{cur.proposal_id}"
+                if key not in announced:  # a crash between the commit and the alert enqueue must not strand it
+                    alert = prepare(veto_window_open(cur.proposal_id, cur.veto_window_hours), now)
+                    alerts[f"{alert.alert_id}.json"] = alert.to_json()
             else:
-                cur = apply(opened, "VETO_WINDOW", "system:sweeper", "delivered")
+                opened = cur.model_copy(update={"veto_deadline": receipt.veto_deadline})
+                late = (
+                    receipt.veto_deadline > cur.execute_at
+                    if cur.approval_mode == "auto"
+                    else receipt.delivered_at >= cur.execute_at
+                )
+                if late:
+                    cur = apply(opened, "EXPIRED", "system:sweeper", "late_delivery")
+                    alert = prepare(proposal_expired(cur.proposal_id, "delivered too late to veto before execution"), now)
+                    alerts[f"{alert.alert_id}.json"] = alert.to_json()
+                else:
+                    cur = apply(opened, "VETO_WINDOW", "system:sweeper", "delivered")
 
         if (
             cur.state == "VETO_WINDOW"
@@ -88,14 +115,18 @@ def _plan(
     return staged, alerts, written
 
 
-def sweep(now: datetime, store: FileStore, clock: Clock) -> list[TransitionRecord]:
+def sweep(
+    now: datetime, store: FileStore, clock: Clock, visible_channels: Sequence[str] = DEFAULT_VISIBLE_CHANNELS
+) -> list[TransitionRecord]:
     """Run every sweeper rule once (AS §1.5 steps 1-5), under one transaction only if anything changes. Idempotent.
 
     1. ``PAUSED``/``CLOSED`` -> every non-terminal proposal -> ``CANCELLED_PAUSED``/``CANCELLED_CLOSED`` (TS D19).
-    2. ``PROPOSED`` -> ``VETO_WINDOW`` (deadline = now + veto_window_hours; see module docstring).
+    2. ``PROPOSED`` with a receipt from one of ``visible_channels`` -> ``VETO_WINDOW``, deadline = the first such
+       receipt's. Without one it stays ``PROPOSED`` and a missing ``veto_window_open`` alert is re-enqueued.
     3. ``VETO_WINDOW``, ``auto`` mode, deadline passed -> ``APPROVED``.
     4. Non-terminal, past ``expires_at`` -> ``EXPIRED`` (alert).
-    5. ``auto`` proposals whose window would close after ``execute_at`` -> ``EXPIRED`` immediately (TS D10).
+    5. A receipt that comes too late (``auto``: deadline after ``execute_at``; ``explicit``: delivered at or after
+       ``execute_at``) -> ``EXPIRED``, cause ``late_delivery`` (TS D10, AS §8.3 item 5), instead of step 2.
 
     The rules are first evaluated lock-free (every file is written atomically, so a read is never torn); the
     common "nothing to do" tick returns without touching ``portfolio.lock``. If there is work, it is evaluated
@@ -105,12 +136,16 @@ def sweep(now: datetime, store: FileStore, clock: Clock) -> list[TransitionRecor
     """
     if not store.portfolio_exists():
         return []
-    staged, _, _ = _plan(now, store.load_portfolio().status, _load_all_proposals(store))
-    if not staged:
+    staged, alerts, _ = _plan(
+        now, store.load_portfolio().status, _load_all_proposals(store), visible_channels, raised_dedupe_keys(store.root)
+    )
+    if not staged and not alerts:
         return []
     try:
         with store.transaction("sweep") as txn:
-            staged, alerts, written = _plan(now, txn.state.status, _load_all_proposals(store))
+            staged, alerts, written = _plan(
+                now, txn.state.status, _load_all_proposals(store), visible_channels, raised_dedupe_keys(store.root)
+            )
             if staged:
                 txn.stage_proposals(dict(staged))
             if alerts:

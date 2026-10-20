@@ -237,6 +237,20 @@ class TransitionRecord(_Doc):
     hash: str
 
 
+class DeliveryReceipt(_Doc):
+    """A single delivery receipt, appended when a veto alert reaches a visible channel (AS §8.3)."""
+
+    channel: str
+    delivered_at: datetime
+    veto_deadline: datetime
+
+
+class ProposalDelivery(_Doc):
+    """Receipts from visible-channel delivery (AS §8.3); empty until the veto alert has reached the user."""
+
+    receipts: list[DeliveryReceipt] = Field(default_factory=list)
+
+
 class ProposalDoc(_Doc):
     """``proposals/<proposal_id>.json`` (AS §3.3): one idea's legs, timing and audit trail."""
 
@@ -257,6 +271,7 @@ class ProposalDoc(_Doc):
     reconfirms: str | None = None  # set at creation by RECONFIRM: the EXPIRED proposal this one replaces (AS §8.7)
     reconfirmed_as: str | None = None  # set once on the EXPIRED original when RECONFIRM succeeds; makes it idempotent
     reconfirm_check: Literal["pending", "passed", "failed"] | None = None  # None unless created by RECONFIRM
+    delivery: ProposalDelivery = Field(default_factory=ProposalDelivery)  # absent in older files: no receipts
     transitions: list[TransitionRecord] = Field(min_length=1)
 
     def to_canonical_json(self) -> str:

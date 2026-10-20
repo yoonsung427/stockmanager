@@ -16,12 +16,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+from stockmanager.domain.docs import DeliveryReceipt, ProposalDoc
+from stockmanager.domain.proposal_state import is_terminal
 from stockmanager.domain.timeutil import add_elapsed
 from stockmanager.notify.outbox import Alert, enqueue
 from stockmanager.store import FileStore
 from stockmanager.store import fsutil as _fsutil
 from stockmanager.store.fsutil import atomic_write_text
-from stockmanager.store.lock import Clock
+from stockmanager.store.lock import Clock, LockBusy
 
 SEVERITY_COLORS: dict[str, int] = {"positive": 0x2ECC71, "alert": 0xE74C3C, "info": 0x3498DB}
 
@@ -31,6 +33,9 @@ MAX_PERMANENT_ATTEMPTS = 3
 TITLE_MAX_CHARS = 256
 DESCRIPTION_MAX_CHARS = 4096
 MAX_EMBED_FIELDS = 25
+
+#: Channels whose receipt starts a veto window when ``ops.visible_channels`` is not supplied (AS §8.3, ⚑AD12).
+DEFAULT_VISIBLE_CHANNELS: tuple[str, ...] = ("discord",)
 
 
 class Transient(Exception):
@@ -72,11 +77,16 @@ class Channel(Protocol):
         ...
 
 
-def render(alert: Alert, channel: str, now: datetime) -> Rendered:
-    """Render ``alert`` for ``channel`` as of ``now``: late-bound fields (veto deadline) are filled in here."""
+def render(alert: Alert, channel: str, now: datetime, *, deadline: datetime | None = None) -> Rendered:
+    """Render ``alert`` for ``channel`` as of ``now``: late-bound fields (veto deadline) are filled in here.
+
+    ``deadline`` pins the veto deadline (a channel that succeeds after another reuses the first receipt's, AS §8.3);
+    by default it is ``now`` plus the alert's ``window_hours``.
+    """
     body = alert.body
     if "window_hours" in alert.binds:
-        deadline = add_elapsed(now, timedelta(hours=int(alert.binds["window_hours"])))
+        if deadline is None:
+            deadline = add_elapsed(now, timedelta(hours=int(alert.binds["window_hours"])))
         body = body.format(deadline=deadline.isoformat())
     commands_block = "\n".join(alert.commands)
     if channel == "discord":
@@ -112,6 +122,7 @@ def deliver_pending(
     *,
     time_budget: float | None = None,
     monotonic: Callable[[], float] = time.monotonic,
+    visible_channels: Sequence[str] = DEFAULT_VISIBLE_CHANNELS,
 ) -> list[str]:
     """Deliver up to ``budget`` pending alerts, oldest first, serialised by ``alerts/.deliver.lock``.
 
@@ -119,6 +130,9 @@ def deliver_pending(
     further send is started, so the rest of the queue waits for the next call. A send already in flight is not
     interrupted (the channel's own HTTP timeout bounds it). Progress made before the cutoff is still recorded.
     The clock for the budget is ``monotonic`` so wall-clock steps cannot extend or cut it short.
+
+    A successful send of a ``veto_window_open`` alert to one of ``visible_channels`` appends a receipt to the
+    proposal (AS §8.3); the sweeper opens the veto window from it.
 
     Returns the ``alert_id`` of every (alert, channel) send that succeeded this call.
     """
@@ -129,7 +143,7 @@ def deliver_pending(
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         out_of_time = _deadline(time_budget, monotonic)
-        return _deliver_locked(store, channels, clock, budget, pending_dir, out_of_time)
+        return _deliver_locked(store, channels, clock, budget, pending_dir, out_of_time, frozenset(visible_channels))
     finally:
         os.close(fd)
 
@@ -152,6 +166,7 @@ def _deliver_locked(
     budget: int,
     pending_dir: Path,
     out_of_time: Callable[[], bool],
+    visible: frozenset[str],
 ) -> list[str]:
     paths = sorted(pending_dir.glob("*.json"))[:budget]
     loaded = [(path, Alert.from_json(path.read_text(encoding="utf-8"))) for path in paths]
@@ -172,12 +187,19 @@ def _deliver_locked(
                 continue
             if state.next_attempt_at is not None and state.next_attempt_at > now:
                 continue
-            rendered = render(alert, channel.name, now)
+            proposal_id = _veto_proposal_id(alert)
+            deadline = _fixed_deadline(store, proposal_id, alert, now) if proposal_id is not None else None
+            rendered = render(alert, channel.name, now, deadline=deadline)
             try:
                 receipt = channel.send(rendered, nonce=alert.alert_id)
-            except Transient as exc:
+                if proposal_id is not None and deadline is not None and channel.name in visible:
+                    # Before the alert is marked sent: if the receipt cannot be recorded the send is retried
+                    # (at-least-once; the channel's nonce suppresses the duplicate) rather than lost.
+                    _record_receipt(store, proposal_id, channel.name, now, deadline)
+            except (Transient, LockBusy) as exc:
+                retry_after = exc.retry_after if isinstance(exc, Transient) else None
                 state.attempts += 1
-                wait = exc.retry_after if exc.retry_after is not None else _backoff_seconds(state.attempts)
+                wait = retry_after if retry_after is not None else _backoff_seconds(state.attempts)
                 state.next_attempt_at = now + timedelta(seconds=wait)
                 state.last_error = str(exc)
                 touched.add(alert.alert_id)
@@ -204,6 +226,45 @@ def _deliver_locked(
         elif alert.alert_id in touched:
             atomic_write_text(path, alert.to_json())
     return delivered
+
+
+def _veto_proposal_id(alert: Alert) -> str | None:
+    """The proposal a ``veto_window_open`` alert opens the window for, or ``None`` for any other alert."""
+    proposal_id = alert.binds.get("proposal_id")
+    if alert.kind != "veto_window_open" or not isinstance(proposal_id, str) or "window_hours" not in alert.binds:
+        return None
+    return proposal_id
+
+
+def _load_proposal(store: FileStore, proposal_id: str) -> ProposalDoc | None:
+    try:
+        return ProposalDoc.model_validate_json(store.proposal_path(proposal_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None  # missing, unsafe id or quarantined file: nothing to record a receipt on
+
+
+def _fixed_deadline(store: FileStore, proposal_id: str, alert: Alert, now: datetime) -> datetime:
+    """The veto deadline to render: the first receipt's if one exists, else ``now + window_hours`` (AS §8.3)."""
+    doc = _load_proposal(store, proposal_id)
+    if doc is not None and doc.delivery.receipts:
+        return doc.delivery.receipts[0].veto_deadline
+    return add_elapsed(now, timedelta(hours=int(alert.binds["window_hours"])))
+
+
+def _record_receipt(store: FileStore, proposal_id: str, channel: str, now: datetime, deadline: datetime) -> None:
+    """Append ``{channel, delivered_at, veto_deadline}`` to the proposal's ``delivery.receipts`` under the lock.
+
+    The lock matters: the sweeper rewrites the same file in its own transaction, and an unlocked read-modify-write
+    here could erase one of its transitions. Raises ``LockBusy`` if the lock cannot be taken. A terminal proposal, a
+    missing file or a channel that already has a receipt is left untouched.
+    """
+    with store.transaction("deliver", max_attempts=1, sleep_seconds=0.0) as txn:
+        doc = _load_proposal(store, proposal_id)
+        if doc is None or is_terminal(doc.state) or any(r.channel == channel for r in doc.delivery.receipts):
+            return
+        receipt = DeliveryReceipt(channel=channel, delivered_at=now, veto_deadline=deadline)
+        updated = doc.delivery.model_copy(update={"receipts": [*doc.delivery.receipts, receipt]})
+        txn.stage_proposals({proposal_id: doc.model_copy(update={"delivery": updated})})
 
 
 def _dead_letter(store: FileStore, path: Path, alert: Alert, channel_name: str) -> None:

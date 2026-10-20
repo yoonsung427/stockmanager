@@ -160,9 +160,11 @@ def _run(
     use_catalogue(cfg.ops.notification_catalogue)  # config.yaml may have changed the alert text since the last tick
     if channels:
         watchdog.check("outbox")
-        deliver_pending(store, channels, clock, time_budget=OUTBOX_BUDGET_S)
+        deliver_pending(
+            store, channels, clock, time_budget=OUTBOX_BUDGET_S, visible_channels=cfg.ops.visible_channels
+        )
     watchdog.check("sweep")
-    sweep(now, store, clock)
+    sweep(now, store, clock, cfg.ops.visible_channels)
 
     if not store.portfolio_exists():
         return 0

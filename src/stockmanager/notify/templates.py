@@ -164,7 +164,7 @@ def veto_window_open(proposal_id: str, window_hours: int) -> Alert:
         fields={"proposal_id": proposal_id, "window_hours": str(window_hours)},
         commands=[f"VETO {proposal_id} [reason]", "PAUSE"],
         dedupe_key=f"veto_window_open:{proposal_id}",
-        binds={"window_hours": window_hours},
+        binds={"proposal_id": proposal_id, "window_hours": window_hours},
     )
 
 

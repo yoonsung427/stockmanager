@@ -22,7 +22,7 @@ from stockmanager.domain.docs import ProposalDoc
 from stockmanager.domain.proposal_state import GENESIS_HASH, chain_hash
 from stockmanager.execution.engine import ExecutionEngine
 from stockmanager.scheduler.tick import tick
-from stockmanager.sim import StubReasoner
+from stockmanager.sim import RecordingChannel, StubReasoner
 from stockmanager.sim.clock import PT
 from stockmanager.store import FileStore
 from tests.support.assertions import (
@@ -56,11 +56,14 @@ class Run:
         self.world = world
         self.cfg = cfg or Config()
         self.evaluation = world.evaluation(StubReasoner(pair_output()))
+        self.channels = [RecordingChannel("discord", world.clock)]  # a visible channel: its receipts open the veto window
 
     def step(self, when: datetime) -> None:
         """Move the clock to ``when`` and run one tick against the current store."""
         self.world.clock.set(when)
-        assert tick(self.world.clock, self.world.store, self.cfg, execution=self.world.engine(), evaluation=self.evaluation) == 0
+        assert tick(
+            self.world.clock, self.world.store, self.cfg, execution=self.world.engine(), evaluation=self.evaluation, channels=self.channels
+        ) == 0
 
     @property
     def state(self) -> str:

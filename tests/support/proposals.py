@@ -6,8 +6,17 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from stockmanager.domain.docs import CapsSnapshot, ProposalDoc, ProposalLeg, ProposalSize, TransitionRecord
+from stockmanager.domain.docs import (
+    CapsSnapshot,
+    DeliveryReceipt,
+    ProposalDelivery,
+    ProposalDoc,
+    ProposalLeg,
+    ProposalSize,
+    TransitionRecord,
+)
 from stockmanager.domain.proposal_state import GENESIS_HASH, ProposalState, chain_hash
+from stockmanager.domain.timeutil import add_elapsed
 
 PT = ZoneInfo("America/Los_Angeles")
 
@@ -71,3 +80,12 @@ def advance(doc: ProposalDoc, to_state: ProposalState, at: datetime, actor: str 
     )
     rec = rec.model_copy(update={"hash": chain_hash(prev.hash, rec.model_dump(mode="json", by_alias=True))})
     return doc.model_copy(update={"state": to_state, "transitions": [*doc.transitions, rec]})
+
+
+def with_receipt(
+    doc: ProposalDoc, delivered_at: datetime, *, channel: str = "discord", window_hours: int | None = None
+) -> ProposalDoc:
+    """``doc`` with one more delivery receipt; the deadline is ``delivered_at`` + the window (AS §8.3)."""
+    hours = window_hours if window_hours is not None else doc.veto_window_hours
+    receipt = DeliveryReceipt(channel=channel, delivered_at=delivered_at, veto_deadline=add_elapsed(delivered_at, timedelta(hours=hours)))
+    return doc.model_copy(update={"delivery": ProposalDelivery(receipts=[*doc.delivery.receipts, receipt])})

@@ -37,7 +37,7 @@ from tests.support.assertions import (
     proposal_state,
     workspace_hashes,
 )
-from tests.support.proposals import advance
+from tests.support.proposals import advance, with_receipt
 from tests.support.reasoner_output import hold_output, pair_output
 from tests.support.world import (
     EVAL_SAT,
@@ -213,7 +213,7 @@ def test_edge17_late_delivery_is_expired_only_if_the_window_would_pass_the_open(
 ) -> None:
     """TS EDGE-17 (D10): an auto-approve proposal whose recomputed veto deadline would pass its execution time is EXPIRED."""
     world.seed()
-    world.put(pr_pair(state="PROPOSED"))
+    world.put(with_receipt(pr_pair(state="PROPOSED"), delivered))
     world.clock.set(delivered)
 
     sweep(delivered, world.store, world.clock)
@@ -228,16 +228,15 @@ def test_edge18_veto_window_counts_elapsed_hours_across_the_dst_change(world: Wo
     """TS EDGE-18: 24 h from Sat 2026-10-31 09:00 PDT is 2026-11-01 16:00 UTC (08:00 PST), not 09:00 PST (17:00 UTC)."""
     world.seed()
     monday = datetime(2026, 11, 2, 6, 30, tzinfo=PT)
-    world.put(
-        pr_pair(state="PROPOSED", created_at=DST_EVAL).model_copy(
-            update={
-                "veto_window_hours": 24,
-                "execute_at": monday,
-                "expires_at": monday + timedelta(minutes=60),
-                "fill_session_date": monday.date(),
-            }
-        )
+    proposed = pr_pair(state="PROPOSED", created_at=DST_EVAL).model_copy(
+        update={
+            "veto_window_hours": 24,
+            "execute_at": monday,
+            "expires_at": monday + timedelta(minutes=60),
+            "fill_session_date": monday.date(),
+        }
     )
+    world.put(with_receipt(proposed, DST_EVAL))
     world.clock.set(DST_EVAL)
     sweep(DST_EVAL, world.store, world.clock)
     deadline = world.proposal(PAIR_ID).veto_deadline

@@ -18,7 +18,7 @@ from stockmanager.scheduler.state import SchedulerState
 from stockmanager.scheduler.sweeper import sweep
 from stockmanager.store import FileStore
 from tests.support.books import FakePidChecker, FixedClock
-from tests.support.proposals import make_proposal
+from tests.support.proposals import make_proposal, with_receipt
 
 PT = ZoneInfo("America/Los_Angeles")
 
@@ -210,7 +210,7 @@ def test_sweep_opens_veto_window_for_proposed(store: FileStore) -> None:
     p = make_proposal(
         state="PROPOSED", created_at=store.clock(), veto_window_hours=4, execute_at=store.clock() + timedelta(hours=8)
     )
-    _write_proposal(store, p)
+    _write_proposal(store, with_receipt(p, store.clock()))
     sweep(store.clock(), store, store.clock)
     data = json.loads(store.proposal_path(p.proposal_id).read_text())
     assert data["state"] == "VETO_WINDOW"
@@ -256,7 +256,7 @@ def test_sweep_deadline_too_short_expires_immediately(store: FileStore) -> None:
     p = make_proposal(
         state="PROPOSED", created_at=now, veto_window_hours=4, execute_at=now + timedelta(hours=1), approval_mode="auto"
     )
-    _write_proposal(store, p)
+    _write_proposal(store, with_receipt(p, now))
     sweep(now, store, store.clock)
     data = json.loads(store.proposal_path(p.proposal_id).read_text())
     assert data["state"] == "EXPIRED"
