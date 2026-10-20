@@ -8,12 +8,16 @@ in isolation and shared with reconcile's replay.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
+from stockmanager.dashboard.build import build_dashboard
+from stockmanager.dashboard.render import render_dashboard
+from stockmanager.dashboard.write import write_dashboard
 from stockmanager.domain.docs import PortfolioDoc, PriceQuote, ProposalDoc, Trade, TransitionRecord
 from stockmanager.domain.fills import LedgerState, apply_fill, clamp_to_cash, size_buy, size_sell
 from stockmanager.domain.ids import opening_proposal_id, trade_id
@@ -269,6 +273,13 @@ class ExecutionEngine:
         except GateError as exc:
             return RunResult("skipped_not_live", str(exc))
         # Step 11: unlock; alert delivery is best-effort and happens on the next tick's outbox drain.
+        # Build and write dashboard post-commit so it captures the updated state.
+        try:
+            model = build_dashboard(self._store, self._clock)
+            html = render_dashboard(model)
+            write_dashboard(self._store, model, html)
+        except Exception:
+            logging.getLogger(__name__).exception("Dashboard build failed")
         return RunResult("completed")
 
     def _void_reason(
@@ -430,6 +441,13 @@ class ExecutionEngine:
             raise  # the job stops; the tick's catch-all turns it into exit code 1 (TS NN-26)
         except GateError as exc:
             return RunResult("skipped_not_live", str(exc))
+        # Build and write dashboard post-commit.
+        try:
+            model = build_dashboard(self._store, self._clock)
+            html = render_dashboard(model)
+            write_dashboard(self._store, model, html)
+        except Exception:
+            logging.getLogger(__name__).exception("Dashboard build failed")
         return RunResult("completed")
 
     def _alert_opening_failure(self, staged: Sequence[dict[str, Any]], detail: str, now: datetime) -> None:
@@ -545,6 +563,13 @@ class ExecutionEngine:
             return RunResult("skipped_not_live", str(exc))
         pending_close = self._store.root / "state" / "pending_close.json"
         pending_close.unlink(missing_ok=True)
+        # Build and write dashboard post-commit.
+        try:
+            model = build_dashboard(self._store, self._clock)
+            html = render_dashboard(model)
+            write_dashboard(self._store, model, html)
+        except Exception:
+            logging.getLogger(__name__).exception("Dashboard build failed")
         return RunResult("completed")
 
 

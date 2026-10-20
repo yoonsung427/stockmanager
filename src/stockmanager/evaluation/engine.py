@@ -7,6 +7,7 @@ the lock is held only to commit, with an optimistic ``rev`` check guarding again
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
@@ -14,6 +15,9 @@ from typing import Literal
 
 from stockmanager.config.model import Config
 from stockmanager.config.proposals import ProposalConfig
+from stockmanager.dashboard.build import build_dashboard
+from stockmanager.dashboard.render import render_dashboard
+from stockmanager.dashboard.write import write_dashboard
 from stockmanager.domain.docs import PortfolioDoc, PriceTable, ProposalDoc
 from stockmanager.domain.ports import PriceProvider, SessionCalendar, SymbolVerifier
 from stockmanager.domain.proposal_state import is_terminal
@@ -207,4 +211,12 @@ class EvaluationEngine:
             return RunResult("halted_reconcile", "; ".join(exc.divergences))
         except GateError as exc:
             return RunResult("skipped_not_live", str(exc))
+
+        # Build and write dashboard post-commit so it captures the updated state.
+        try:
+            model = build_dashboard(self._store, self._clock)
+            html = render_dashboard(model)
+            write_dashboard(self._store, model, html)
+        except Exception:
+            logging.getLogger(__name__).exception("Dashboard build failed")
         return RunResult("completed", failure_reason)
