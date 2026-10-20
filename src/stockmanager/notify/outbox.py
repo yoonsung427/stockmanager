@@ -127,7 +127,7 @@ def prepare(alert: Alert, now: datetime) -> Alert:
     if alert.occurred_at is None:
         alert.occurred_at = now
     if not alert.alert_id:
-        alert.alert_id = f"{alert.occurred_at.strftime('%Y%m%dT%H%M%S%f')}-{secrets.token_hex(4)}"
+        alert.alert_id = f"{alert.occurred_at.strftime('%Y%m%dT%H%M%S%f')[:16]}-{secrets.token_hex(4)}"
     if not alert.channels:
         alert.channels = {name: ChannelState() for name in DEFAULT_CHANNELS}
     return alert
