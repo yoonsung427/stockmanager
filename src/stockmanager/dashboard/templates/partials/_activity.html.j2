@@ -1,0 +1,19 @@
+<section data-section="activity">
+  <h2>Recent activity</h2>
+  <table>
+    <thead><tr><th>Trade ID</th><th>Date</th><th>Action</th><th>Ticker</th><th>Shares</th><th>Price</th><th>Value</th></tr></thead>
+    <tbody>
+      {% for t in m.recent_trades %}
+      <tr>
+        <td>{{ t.trade_id }}</td>
+        <td>{{ t.timestamp.isoformat() }}</td>
+        <td>{{ t.action }}</td>
+        <td>{{ t.ticker }}</td>
+        <td>{{ t.shares|shares }}</td>
+        <td>{{ t.fill_price|decimal }}</td>
+        <td>{{ t.value|money }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

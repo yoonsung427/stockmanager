@@ -1,0 +1,11 @@
+<section data-section="earnings">
+  <h2>Upcoming earnings</h2>
+  <table>
+    <thead><tr><th>Ticker</th><th>Date</th><th>Event</th></tr></thead>
+    <tbody>
+      {% for e in m.upcoming_earnings %}
+      <tr><td>{{ e.ticker }}</td><td>{{ e.date.isoformat() }}</td><td>{{ e.event }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

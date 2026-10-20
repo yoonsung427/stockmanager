@@ -1,0 +1,19 @@
+<section data-section="performance">
+  <h2>Performance</h2>
+  {{ svg_line_chart([("Portfolio NAV", m.nav_history), ("Benchmark (rebased)", m.benchmark_history)], "Portfolio NAV vs benchmark") }}
+  <details>
+    <summary>Data table</summary>
+    <table>
+      <thead><tr><th>Date</th><th>Portfolio NAV</th><th>Benchmark (rebased)</th></tr></thead>
+      <tbody>
+        {% for point in m.nav_history %}
+        <tr>
+          <td>{{ point.date.isoformat() }}</td>
+          <td>{{ point.value|decimal(2) }}</td>
+          <td>{{ m.benchmark_history[loop.index0].value|decimal(2) if loop.index0 < m.benchmark_history|length else "n/a" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+</section>

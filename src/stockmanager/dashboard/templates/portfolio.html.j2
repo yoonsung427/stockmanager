@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="{{ csp|safe }}">
+<title>Portfolio Dashboard</title>
+<style>
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 0; padding: 1.5rem; background: #f8fafc; color: #111827; }
+  h1 { font-size: 1.4rem; }
+  section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
+  h2 { font-size: 1.05rem; margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid #f1f5f9; }
+  .pos { color: #16a34a; }
+  .neg { color: #dc2626; }
+  .badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; font-weight: 600; font-size: 0.8rem; }
+  .badge-LIVE { background: #dcfce7; color: #166534; }
+  .badge-PAUSED { background: #fef9c3; color: #854d0e; }
+  .badge-CLOSED { background: #e5e7eb; color: #374151; }
+  .badge-STAGED { background: #dbeafe; color: #1e40af; }
+  .badge-HALTED { background: #fee2e2; color: #991b1b; }
+  .legend { list-style: none; padding: 0; margin: 0.5rem 0 0; font-size: 0.85rem; }
+  .legend li { margin-bottom: 0.2rem; }
+  .swatch { display: inline-block; width: 0.8em; height: 0.8em; margin-right: 0.4em; border-radius: 2px; }
+  code { background: #f1f5f9; padding: 0.1rem 0.4rem; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>Portfolio Dashboard</h1>
+{% include "partials/_summary.html.j2" %}
+{% include "partials/_holdings.html.j2" %}
+{% include "partials/_performance.html.j2" %}
+{% include "partials/_sectors.html.j2" %}
+{% include "partials/_risk.html.j2" %}
+{% include "partials/_activity.html.j2" %}
+{% include "partials/_earnings.html.j2" %}
+{% include "partials/_news.html.j2" %}
+{% include "partials/_evaluations.html.j2" %}
+{% include "partials/_status.html.j2" %}
+</body>
+</html>

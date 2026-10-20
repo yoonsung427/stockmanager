@@ -41,7 +41,7 @@ Repository = "https://github.com/yoonsung/stockmanager"
 where = ["src"]
 
 [tool.setuptools.package-data]
-stockmanager = ["prompts/**/*"]
+stockmanager = ["prompts/**/*", "dashboard/templates/**/*"]
 
 [tool.ruff]
 line-length = 120

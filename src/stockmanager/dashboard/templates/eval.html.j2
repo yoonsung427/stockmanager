@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="{{ csp|safe }}">
+<title>Evaluation {{ e.get("cycle_date", e.get("cycle_id", "")) }}</title>
+<style>
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 0; padding: 1.5rem; background: #f8fafc; color: #111827; }
+  section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
+</style>
+</head>
+<body>
+<h1>Evaluation {{ e.get("cycle_date", e.get("cycle_id", "")) }}</h1>
+<section data-section="summary">
+  <h2>Summary</h2>
+  <p>{{ e.get("summary", "") }}</p>
+</section>
+<section data-section="reasoning">
+  <h2>Reasoner output</h2>
+  <p>{{ e.get("reasoner", {}).get("summary", "") }}</p>
+  <h3>Holdings assessed</h3>
+  <ul>
+    {% for h in e.get("reasoner", {}).get("holdings", []) %}
+    <li>{{ h.get("ticker", "") }}: {{ h.get("stance", "") }} ({{ h.get("thesis_status", "") }})</li>
+    {% endfor %}
+  </ul>
+</section>
+<section data-section="sources">
+  <h2>Sources</h2>
+  <ul>
+    {% for s in e.get("sources", []) %}
+    <li>{{ s }}</li>
+    {% endfor %}
+  </ul>
+</section>
+<section data-section="ideas-not-proposed">
+  <h2>Ideas not proposed</h2>
+  <ul>
+    {% for idea in e.get("ideas_not_proposed", []) %}
+    <li>priority {{ idea.get("priority", "") }}: {{ idea.get("reason", "") }} &mdash; {{ idea.get("detail", "") }}</li>
+    {% endfor %}
+  </ul>
+</section>
+</body>
+</html>

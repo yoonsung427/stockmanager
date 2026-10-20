@@ -1,0 +1,26 @@
+<section data-section="holdings">
+  <h2>Holdings</h2>
+  <table>
+    <thead>
+      <tr><th>Ticker</th><th>Thesis</th><th>Shares</th><th>Avg cost</th><th>Current price</th><th>Value</th><th>Return %</th><th>Weight %</th></tr>
+    </thead>
+    <tbody>
+      {% for row in m.positions %}
+      <tr>
+        <td>{{ row.ticker }}</td>
+        <td>{{ row.thesis }}</td>
+        <td>{{ row.shares|shares }}</td>
+        <td>{{ row.avg_cost|decimal }}</td>
+        <td>{{ row.current_price|decimal }}</td>
+        <td>{{ row.value|money }}</td>
+        <td class="{{ 'pos' if row.return_pct is not none and row.return_pct >= 0 else 'neg' if row.return_pct is not none else '' }}">{{ row.return_pct|pct }}</td>
+        <td>{{ row.weight_pct|pct if row.weight_pct is not none else "n/a" }}</td>
+      </tr>
+      {% endfor %}
+      <tr>
+        <td>Cash</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>
+        <td>{{ m.cash|money }}</td><td>&mdash;</td><td>{{ m.cash_pct|pct }}</td>
+      </tr>
+    </tbody>
+  </table>
+</section>

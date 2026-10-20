@@ -1,0 +1,18 @@
+<section data-section="risk">
+  <h2>Risk</h2>
+  <table>
+    <tr><th>Max drawdown</th><td>{{ m.risk.max_drawdown_pct|pct }}</td></tr>
+    <tr><th>Weekly volatility</th><td>{{ m.risk.volatility_weekly_pct|pct }}</td></tr>
+    <tr><th>Sharpe</th><td>{{ m.risk.sharpe|decimal(2) }}</td></tr>
+    <tr><th>Largest position</th><td>{{ m.risk.largest_position_pct|pct }}</td></tr>
+    <tr><th>Sector concentration</th><td>{{ m.risk.sector_concentration|pct }}</td></tr>
+    <tr>
+      <th>Correlation flags</th>
+      <td>
+        {% if m.risk.correlation_flags %}
+          {% for flag in m.risk.correlation_flags %}{{ flag }}{% if not loop.last %}, {% endif %}{% endfor %}
+        {% else %}n/a{% endif %}
+      </td>
+    </tr>
+  </table>
+</section>

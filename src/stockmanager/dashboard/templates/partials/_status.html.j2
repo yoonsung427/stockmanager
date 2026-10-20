@@ -1,0 +1,26 @@
+<section data-section="status">
+  <h2>Status</h2>
+  <p>
+    <span class="badge badge-{{ m.status }}">{{ m.status }}</span>
+    auto_approve: {{ "on" if m.auto_approve else "off" }}
+  </p>
+  {% if m.pending_proposals %}
+  <table>
+    <thead><tr><th>Proposal</th><th>State</th><th>Legs</th><th>Veto deadline</th><th>Expires</th><th>Command</th></tr></thead>
+    <tbody>
+      {% for p in m.pending_proposals %}
+      <tr>
+        <td>{{ p.proposal_id }}</td>
+        <td>{{ p.state }}</td>
+        <td>{{ p.legs_summary }}</td>
+        <td>{{ p.veto_deadline.isoformat() if p.veto_deadline else "n/a" }}</td>
+        <td>{{ p.expires_at.isoformat() }}</td>
+        <td><code>{{ p.command_literal }}</code></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No pending proposals.</p>
+  {% endif %}
+</section>

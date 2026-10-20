@@ -1,0 +1,12 @@
+<section data-section="summary">
+  <h2>Summary</h2>
+  <table>
+    <tr><th>NAV</th><td>{{ m.nav|money }}</td></tr>
+    <tr><th>ROI since inception</th><td>{{ m.nav_pct_change|pct }}</td></tr>
+    <tr><th>Benchmark ({{ m.benchmark_ticker }}) ROI</th><td>{{ m.benchmark_roi_pct|pct }}</td></tr>
+    <tr><th>Relative to benchmark</th><td>{{ m.relative_pct|pct }}</td></tr>
+    <tr><th>Max drawdown</th><td>{{ m.max_drawdown_pct|pct }}</td></tr>
+    <tr><th>Days active</th><td>{{ m.days_active if m.days_active is not none else "n/a" }}</td></tr>
+  </table>
+  <p>Last updated: <time datetime="{{ m.last_updated.isoformat() }}">{{ m.last_updated.isoformat() }}</time> (PT)</p>
+</section>

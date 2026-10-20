@@ -1,0 +1,11 @@
+<section data-section="evaluations">
+  <h2>Evaluations</h2>
+  <ul>
+    {% for ev in m.evaluations %}
+    <li>
+      <a href="evaluations/eval-{{ ev.cycle_date.isoformat() }}.html" rel="noopener noreferrer">{{ ev.cycle_date.isoformat() }}</a>
+      &mdash; {{ ev.summary }} ({{ ev.ideas_count }} ideas, {{ ev.proposals_count }} proposals)
+    </li>
+    {% endfor %}
+  </ul>
+</section>
