@@ -16,6 +16,7 @@ from stockmanager.commands.parser import ParsedCommand, parse_command
 from stockmanager.config import Config, DiscordConfig
 from stockmanager.domain.docs import PriceQuote
 from stockmanager.store import FileStore
+from tests.support.assertions import alerts
 from tests.support.books import FakePidChecker, FixedClock, make_portfolio
 from tests.support.proposals import make_proposal
 
@@ -31,7 +32,14 @@ class FakePriceProvider:
     name: Literal["yahoo", "finnhub"] = "yahoo"
 
     def get_price(self, ticker: str, session_date: date, kind: Literal["open", "close"]) -> PriceQuote:
-        return PriceQuote(ticker=ticker, session_date=session_date, kind=kind, price=Decimal(150), source="yahoo", fetched_at=datetime.now(PT))
+        return PriceQuote(
+            ticker=ticker,
+            session_date=session_date,
+            kind=kind,
+            price=Decimal(150),
+            source="yahoo",
+            fetched_at=datetime.now(PT),
+        )
 
 
 @pytest.fixture
@@ -46,7 +54,9 @@ def store(tmp_path: Path, clock: FixedClock) -> FileStore:
 
 @pytest.fixture
 def ctx(store: FileStore, clock: FixedClock) -> CommandContext:
-    return CommandContext(store=store, cfg=Config(), clock=clock, calendar=FakeCalendar(), price_provider=FakePriceProvider())
+    return CommandContext(
+        store=store, cfg=Config(), clock=clock, calendar=FakeCalendar(), price_provider=FakePriceProvider()
+    )
 
 
 def cli(sent_at: datetime) -> Sender:
@@ -180,8 +190,12 @@ def test_pause_cancels_non_terminal_proposals(ctx: CommandContext, store: FileSt
     assert store.load_portfolio().status == "PAUSED"
     from stockmanager.domain.docs import ProposalDoc
 
-    assert ProposalDoc.model_validate_json(store.proposal_path("P-2026-10-12-01").read_text()).state == "CANCELLED_PAUSED"
-    assert ProposalDoc.model_validate_json(store.proposal_path("P-2026-10-12-02").read_text()).state == "CANCELLED_PAUSED"
+    assert (
+        ProposalDoc.model_validate_json(store.proposal_path("P-2026-10-12-01").read_text()).state == "CANCELLED_PAUSED"
+    )
+    assert (
+        ProposalDoc.model_validate_json(store.proposal_path("P-2026-10-12-02").read_text()).state == "CANCELLED_PAUSED"
+    )
     assert ProposalDoc.model_validate_json(store.proposal_path("P-2026-10-12-03").read_text()).state == "EXECUTED"
     pending = list((store.root / "alerts" / "pending").glob("*.json"))
     assert len(pending) == 1
@@ -214,8 +228,12 @@ def test_set_allowed_key(ctx: CommandContext, store: FileStore, clock: FixedCloc
     assert ctx.cfg.max_position_pct == Decimal(25)
 
 
-@pytest.mark.parametrize("key", ["ops.exec_delay_minutes", "llm.reasoner_model", "news.max_items_per_query", "discord.channel_id"])
-def test_set_blocked_namespaces_are_rejected(ctx: CommandContext, store: FileStore, clock: FixedClock, key: str) -> None:
+@pytest.mark.parametrize(
+    "key", ["ops.exec_delay_minutes", "llm.reasoner_model", "news.max_items_per_query", "discord.channel_id"]
+)
+def test_set_blocked_namespaces_are_rejected(
+    ctx: CommandContext, store: FileStore, clock: FixedClock, key: str
+) -> None:
     store.save_portfolio(make_portfolio(status="LIVE"))
     assert cmd_set(ctx, key, "1", cli(clock.now)).startswith("❌")
 
@@ -249,6 +267,8 @@ def test_close_then_confirm_closes_with_a_final_report_and_sells_nothing(
     doc = store.load_portfolio()
     assert doc.status == "CLOSED" and doc.final_report is not None
     assert doc.positions == held and doc.trades == trades
+    (alert,) = alerts(store.root, "final_report")
+    assert alert["fields"]["trade_summary"] == "1 trades: 1 buys, 0 sells" and alert["fields"]["best_worst"]
 
 
 def test_close_confirm_without_close_is_rejected(ctx: CommandContext, store: FileStore, clock: FixedClock) -> None:
@@ -256,7 +276,9 @@ def test_close_confirm_without_close_is_rejected(ctx: CommandContext, store: Fil
     assert handle("CLOSE CONFIRM", cli(clock.now), ctx).startswith("❌")
 
 
-def test_close_confirm_from_different_authority_is_rejected(ctx: CommandContext, store: FileStore, clock: FixedClock) -> None:
+def test_close_confirm_from_different_authority_is_rejected(
+    ctx: CommandContext, store: FileStore, clock: FixedClock
+) -> None:
     store.save_portfolio(make_portfolio(status="LIVE"))
     handle("CLOSE", discord_sender("1", clock.now), ctx)
     # same command content from a stranger does not get authorized at all in handle(), so call the handler directly

@@ -15,6 +15,7 @@ from stockmanager.domain.proposal_state import ProposalState, chain_hash
 from stockmanager.execution.engine import ExecutionEngine
 from stockmanager.pricing.errors import PriceError
 from stockmanager.store import FileStore
+from tests.support.assertions import alerts
 from tests.support.books import FakePidChecker, FixedClock, make_portfolio, make_trade
 from tests.support.proposals import make_proposal
 
@@ -74,7 +75,14 @@ def live_portfolio(cash: str = "10000", positions: object = None) -> PortfolioDo
 def _advance(doc: ProposalDoc, to_state: ProposalState, actor: str, cause: str, at: datetime) -> ProposalDoc:
     prev = doc.transitions[-1]
     rec = TransitionRecord(
-        seq=prev.seq + 1, from_state=doc.state, to=to_state, at=at, actor=actor, cause=cause, prev_hash=prev.hash, hash=""
+        seq=prev.seq + 1,
+        from_state=doc.state,
+        to=to_state,
+        at=at,
+        actor=actor,
+        cause=cause,
+        prev_hash=prev.hash,
+        hash="",
     )
     rec = rec.model_copy(update={"hash": chain_hash(prev.hash, rec.model_dump(mode="json", by_alias=True))})
     return doc.model_copy(update={"state": to_state, "transitions": [*doc.transitions, rec]})
@@ -93,7 +101,9 @@ def approved_proposal(created_at: datetime, execute_at: datetime) -> ProposalDoc
 
 def test_run_opening_fills_staged_picks_and_goes_live(store: FileStore, clock: FixedClock) -> None:
     doc = make_portfolio(trades=[], start_cash="10000", status="APPROVED")
-    doc = doc.model_copy(update={"config": {"staged_orders": [{"ticker": "AAPL", "target_value": "5000", "thesis": "t"}]}})
+    doc = doc.model_copy(
+        update={"config": {"staged_orders": [{"ticker": "AAPL", "target_value": "5000", "thesis": "t"}]}}
+    )
     store.save_portfolio(doc)
     e = engine(store, clock, {"AAPL": Decimal(100)})
     result = e.run_opening()
@@ -250,8 +260,8 @@ def test_run_final_valuation_closes_without_selling_positions(store: FileStore, 
     store.save_portfolio(doc)
     p = make_proposal(state="VETO_WINDOW", created_at=clock.now)
     store.save_proposal(p.proposal_id, p)
-    e = engine(store, clock, {"AAPL": Decimal(150)})
-    result = e.run_final_valuation()
+    e = engine(store, clock, {"AAPL": Decimal(150), "SPY": Decimal(500)})
+    result = e.run_final_valuation(benchmark="SPY")
     assert result.outcome == "completed"
     out = store.load_portfolio()
     assert out.status == "CLOSED"
@@ -259,6 +269,10 @@ def test_run_final_valuation_closes_without_selling_positions(store: FileStore, 
     assert out.trades == doc.trades
     assert out.final_report is not None and out.final_report["ending_value"] == "2000.0000"
     assert '"state": "CANCELLED_CLOSED"' in store.proposal_path(p.proposal_id).read_text()
+    (alert,) = alerts(store.root, "final_report")
+    assert alert["fields"]["benchmark_relative"].startswith("+33.3333% vs SPY +0.0000%")
+    assert alert["fields"]["best_worst"] == "Best: AAPL +50.0000%, Worst: AAPL +50.0000%"
+    assert alert["fields"]["trade_summary"] == "1 trades: 1 buys, 0 sells"
 
 
 def test_run_final_valuation_fails_closed_on_price_failure(store: FileStore, clock: FixedClock) -> None:

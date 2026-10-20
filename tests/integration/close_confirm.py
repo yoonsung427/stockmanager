@@ -77,6 +77,10 @@ def test_e2e07_final_valuation_closes_the_books_without_selling(live: World) -> 
     assert Decimal(doc.final_report["ending_value"]) == expected_nav == Decimal(52000)
     assert Decimal(doc.final_report["roi_pct"]) == (expected_nav - 50000) / 50000 * 100 == Decimal(4)
     assert doc.final_report["source"] == "yahoo"
+    (alert,) = alerts(live.root, "final_report")
+    assert alert["fields"]["benchmark_relative"].startswith("+4.0000% vs SPY +0.0000%")  # SPY flat, portfolio +4%
+    assert alert["fields"]["best_worst"].startswith("Best: AAPL +") and "Worst: " in alert["fields"]["best_worst"]
+    assert "trades:" in alert["fields"]["trade_summary"]
     assert books(live.store).trade_ids == before.trade_ids  # positions are not sold
     assert sorted(p.ticker for p in doc.positions) == held == ["AAPL", "JPM", "MSFT"]
     assert proposal_state(live.store, PAIR_ID) == proposal_state(live.store, SINGLE_ID) == "CANCELLED_CLOSED"

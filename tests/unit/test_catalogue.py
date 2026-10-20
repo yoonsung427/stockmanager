@@ -49,7 +49,11 @@ def test_every_default_template_formats_and_has_a_matching_constructor() -> None
 
 def test_an_override_replaces_title_and_body_but_not_commands_or_fields() -> None:
     use_catalogue(
-        [NotificationTemplate(kind="trade_executed", title="Filled {ticker}", body="{action} {shares} {ticker} @ {value}")]
+        [
+            NotificationTemplate(
+                kind="trade_executed", title="Filled {ticker}", body="{action} {shares} {ticker} @ {value}"
+            )
+        ]
     )
     alert = trade_executed("P-1-buy1", "BUY", "AAPL", Decimal("5.0000"), Decimal("1000.0000"))
     assert (alert.title, alert.body) == ("Filled AAPL", "BUY 5.0000 AAPL @ 1000.0000")
@@ -93,3 +97,15 @@ def test_new_templates() -> None:
     assert voided.commands == ["STATUS"] and "cap_breach_at_execution" in voided.body
     report = final_report("52000.0000", None, "yahoo", date(2026, 10, 23))
     assert "ROI n/a%" in report.body and report.dedupe_key == "final_report"
+    assert "Benchmark: n/a" in report.body and "Best/worst: n/a" in report.body and "Trades: n/a" in report.body
+    full = final_report(
+        "52000.0000",
+        "4.0000",
+        "yahoo",
+        date(2026, 10, 23),
+        "+2.1% vs SPY -0.5%",
+        "Best: AAPL +12%",
+        "12 trades: 8 buys, 4 sells",
+    )
+    assert "Benchmark: +2.1% vs SPY -0.5%" in full.body and "Best: AAPL +12%" in full.body
+    assert "12 trades: 8 buys, 4 sells" in full.body and full.fields["trade_summary"] == "12 trades: 8 buys, 4 sells"

@@ -54,7 +54,14 @@ class RunResult:
 def _transition(doc: ProposalDoc, to_state: ProposalState, actor: str, cause: str, at: datetime) -> ProposalDoc:
     prev = doc.transitions[-1]
     rec = TransitionRecord(
-        seq=prev.seq + 1, from_state=doc.state, to=to_state, at=at, actor=actor, cause=cause, prev_hash=prev.hash, hash=""
+        seq=prev.seq + 1,
+        from_state=doc.state,
+        to=to_state,
+        at=at,
+        actor=actor,
+        cause=cause,
+        prev_hash=prev.hash,
+        hash="",
     )
     rec = rec.model_copy(update={"hash": chain_hash(prev.hash, rec.model_dump(mode="json", by_alias=True))})
     return doc.model_copy(update={"state": to_state, "transitions": [*doc.transitions, rec]})
@@ -174,11 +181,15 @@ class ExecutionEngine:
                 if not _chain_valid(cur):
                     return RunResult("aborted_state_changed", "transitions[] chain is invalid")
                 if now > cur.expires_at:
-                    txn.stage_proposals({proposal_id: _transition(cur, "EXPIRED", "system:sweeper", "past expires_at", now)})
+                    txn.stage_proposals(
+                        {proposal_id: _transition(cur, "EXPIRED", "system:sweeper", "past expires_at", now)}
+                    )
                     return RunResult("completed", "expired at execution time")
                 existing_ids = {t.trade_id for t in txn.state.trades}
                 if cur.legs and all(leg.trade_id in existing_ids for leg in cur.legs):
-                    txn.stage_proposals({proposal_id: _transition(cur, "EXECUTED", "system:execution", "already filled", now)})
+                    txn.stage_proposals(
+                        {proposal_id: _transition(cur, "EXECUTED", "system:execution", "already filled", now)}
+                    )
                     return RunResult("completed", "already executed (CP4 recovery)")
                 if cur.state != "APPROVED":
                     return RunResult("aborted_state_changed", f"now {cur.state} (a veto or pause won the race)")
@@ -215,7 +226,9 @@ class ExecutionEngine:
                         cost = q4(shares * quote.price)
                         cash = q4(cash - cost)
                         held[leg.ticker] = q4(held.get(leg.ticker, Decimal(0)) + shares)
-                        trades.append(self._trade(leg.trade_id, cur.execute_at, "BUY", leg.ticker, shares, quote, leg.thesis))
+                        trades.append(
+                            self._trade(leg.trade_id, cur.execute_at, "BUY", leg.ticker, shares, quote, leg.thesis)
+                        )
 
                 # Step 7: void checks (whole-proposal; no partial or resized fill survives a void).
                 void_reason = self._void_reason(cur, txn.state, quotes, held, cash, len(trades))
@@ -297,7 +310,13 @@ class ExecutionEngine:
 
     @staticmethod
     def _trade(
-        trade_id_: str, at: datetime, action: Literal["BUY", "SELL"], ticker: str, shares: Decimal, quote: PriceQuote, thesis: str
+        trade_id_: str,
+        at: datetime,
+        action: Literal["BUY", "SELL"],
+        ticker: str,
+        shares: Decimal,
+        quote: PriceQuote,
+        thesis: str,
     ) -> Trade:
         return Trade(
             trade_id=trade_id_,
@@ -357,7 +376,17 @@ class ExecutionEngine:
                         continue
                     cost = q4(shares * quote.price)
                     cash = q4(cash - cost)
-                    trades.append(self._trade(trade_id(pid, f"buy{n}"), session_open, "BUY", ticker, shares, quote, str(row.get("thesis", ""))))
+                    trades.append(
+                        self._trade(
+                            trade_id(pid, f"buy{n}"),
+                            session_open,
+                            "BUY",
+                            ticker,
+                            shares,
+                            quote,
+                            str(row.get("thesis", "")),
+                        )
+                    )
                 if not trades:
                     return RunResult("no_op", "no fillable tickers")
                 ledger = LedgerState(cash=txn.state.cash, positions={p.ticker: p for p in txn.state.positions})
@@ -379,7 +408,9 @@ class ExecutionEngine:
                             "schema_version": 1,
                             "date": session_date.isoformat(),
                             "kind": "inception",
-                            "nav": str(new_doc.cash + sum((p.shares * p.fill_price for p in new_doc.positions), Decimal(0))),
+                            "nav": str(
+                                new_doc.cash + sum((p.shares * p.fill_price for p in new_doc.positions), Decimal(0))
+                            ),
                             "cash": str(new_doc.cash),
                             "recorded_at": self._clock().isoformat(),
                         }
@@ -412,6 +443,17 @@ class ExecutionEngine:
 
     # -- run_final_valuation: CLOSE CONFIRM ----------------------------------------------------------------------
 
+    def _benchmark_start_close(self, benchmark: str | None, snapshot: PortfolioDoc) -> tuple[str, Decimal] | None:
+        """The benchmark's close on the first trade date, or ``None`` (the report then says n/a)."""
+        if not benchmark or not snapshot.trades:
+            return None
+        start = min(t.timestamp for t in snapshot.trades).astimezone(PT).date()
+        try:
+            table = self._prices.valuation([benchmark], start, self._primary, self._fallback)
+        except ValuationUnavailable:
+            return None
+        return start.isoformat(), table.quotes[benchmark].price
+
     def run_final_valuation(self, benchmark: str | None = None) -> RunResult:
         """``CLOSE CONFIRM`` (AS §8.6): fetch closes before the lock; one transaction records the final report.
 
@@ -436,6 +478,8 @@ class ExecutionEngine:
             prices = {t: q.price for t, q in valuation.quotes.items()}
             source = valuation.source
 
+        bench_start = self._benchmark_start_close(benchmark, snapshot)
+
         try:
             with self._store.transaction("execution:final_valuation") as txn:
                 txn.require(status=("LIVE", "PAUSED"))
@@ -443,10 +487,19 @@ class ExecutionEngine:
                 positions_value = q4(sum((p.shares * prices[p.ticker] for p in txn.state.positions), Decimal(0)))
                 nav = q4(txn.state.cash + positions_value)
                 roi_pct = (
-                    str(q4((nav - txn.state.start_cash) / txn.state.start_cash * 100)) if txn.state.start_cash > 0 else None
+                    str(q4((nav - txn.state.start_cash) / txn.state.start_cash * 100))
+                    if txn.state.start_cash > 0
+                    else None
                 )
-                report_doc = {"ending_value": str(nav), "roi_pct": roi_pct, "source": source, "as_of": session_date.isoformat()}
-                new_doc = txn.state.model_copy(update={"status": "CLOSED", "closed_at": now, "final_report": report_doc})
+                report_doc = {
+                    "ending_value": str(nav),
+                    "roi_pct": roi_pct,
+                    "source": source,
+                    "as_of": session_date.isoformat(),
+                }
+                new_doc = txn.state.model_copy(
+                    update={"status": "CLOSED", "closed_at": now, "final_report": report_doc}
+                )
                 txn.stage_portfolio(new_doc)
                 txn.stage_extras(
                     nav_rows=[
@@ -468,7 +521,19 @@ class ExecutionEngine:
                         staged[p.proposal_id] = _transition(p, "CANCELLED_CLOSED", "system:close", "system closed", now)
                 if staged:
                     txn.stage_proposals(staged)
-                alert = prepare(final_report(str(nav), roi_pct, source, session_date), now)
+                bench_rel = _benchmark_relative(benchmark, bench_start, prices.get(benchmark or ""), roi_pct)
+                alert = prepare(
+                    final_report(
+                        str(nav),
+                        roi_pct,
+                        source,
+                        session_date,
+                        benchmark_relative=bench_rel,
+                        best_worst=_best_worst(txn.state.positions, prices),
+                        trade_summary=_trade_summary(txn.state.trades),
+                    ),
+                    now,
+                )
                 txn.stage_alerts({f"{alert.alert_id}.json": alert.to_json()})
         except LockBusy:
             emit_run_skipped_busy(self._store, "execution:final_valuation", session_date.isoformat())
@@ -481,3 +546,29 @@ class ExecutionEngine:
         pending_close = self._store.root / "state" / "pending_close.json"
         pending_close.unlink(missing_ok=True)
         return RunResult("completed")
+
+
+def _benchmark_relative(
+    benchmark: str | None, start: tuple[str, Decimal] | None, end_price: Decimal | None, roi_pct: str | None
+) -> str | None:
+    """``"+2.1% vs SPY -0.5%"``: portfolio ROI minus benchmark ROI over the same window, or ``None``."""
+    if not benchmark or start is None or end_price is None or roi_pct is None:
+        return None
+    bench_roi = q4((end_price - start[1]) / start[1] * 100)
+    diff = q4(Decimal(roi_pct) - bench_roi)
+    return f"{diff:+}% vs {benchmark} {bench_roi:+}% (since {start[0]})"
+
+
+def _best_worst(positions: Sequence[Any], prices: dict[str, Decimal]) -> str | None:
+    """``"Best: AAPL +12.0000%, Worst: MSFT -3.0000%"`` by return on fill price, or ``None`` with no holdings."""
+    rois = sorted((q4((prices[p.ticker] - p.fill_price) / p.fill_price * 100), p.ticker) for p in positions)
+    if not rois:
+        return None
+    (low, worst), (high, best) = rois[0], rois[-1]
+    return f"Best: {best} {high:+}%, Worst: {worst} {low:+}%"
+
+
+def _trade_summary(trades: Sequence[Trade]) -> str:
+    """``"12 trades: 8 buys, 4 sells"``."""
+    buys = sum(1 for t in trades if t.action == "BUY")
+    return f"{len(trades)} trades: {buys} buys, {len(trades) - buys} sells"

@@ -26,7 +26,11 @@ if TYPE_CHECKING:
 
 #: kind -> (severity, title, body) ``str.format`` templates. The built-in text, used when no override is installed.
 DEFAULTS: dict[str, tuple[Severity, str, str]] = {
-    "evaluation_complete": ("info", "Evaluation complete: {eval_id}", "Evaluation {eval_id} for {cycle_date} is complete.{late}"),
+    "evaluation_complete": (
+        "info",
+        "Evaluation complete: {eval_id}",
+        "Evaluation {eval_id} for {cycle_date} is complete.{late}",
+    ),
     "veto_window_open": (
         "info",
         "Veto window open: {proposal_id}",
@@ -76,7 +80,10 @@ DEFAULTS: dict[str, tuple[Severity, str, str]] = {
     "final_report": (
         "info",
         "Final report: portfolio closed",
-        ("Closed as of {as_of}: ending value {ending_value}, ROI {roi_pct}%, priced from {source}. Positions were not sold."),
+        (
+            "Closed as of {as_of}: ending value {ending_value}, ROI {roi_pct}%, priced from {source}. "
+            "Benchmark: {benchmark_relative}. {best_worst}. {trade_summary}. Positions were not sold."
+        ),
     ),
 }
 
@@ -334,14 +341,33 @@ def calendar_coverage(day: date) -> Alert:
     )
 
 
-def final_report(ending_value: str, roi_pct: str | None, source: str, as_of: date) -> Alert:
-    """``CLOSE CONFIRM`` recorded the final valuation (UX §8, TS CMD-C02)."""
+def final_report(
+    ending_value: str,
+    roi_pct: str | None,
+    source: str,
+    as_of: date,
+    benchmark_relative: str | None = None,
+    best_worst: str | None = None,
+    trade_summary: str | None = None,
+) -> Alert:
+    """``CLOSE CONFIRM`` recorded the final valuation (UX §8, TS CMD-C02; AS §4 ``final_report``)."""
     return render(
         "final_report",
         ending_value=ending_value,
         roi_pct=roi_pct if roi_pct is not None else "n/a",
         source=source,
         as_of=as_of.isoformat(),
-        fields={"ending_value": ending_value, "roi_pct": roi_pct or "", "source": source, "as_of": as_of.isoformat()},
+        benchmark_relative=benchmark_relative or "n/a",
+        best_worst=best_worst or "Best/worst: n/a",
+        trade_summary=trade_summary or "Trades: n/a",
+        fields={
+            "ending_value": ending_value,
+            "roi_pct": roi_pct or "",
+            "source": source,
+            "as_of": as_of.isoformat(),
+            "benchmark_relative": benchmark_relative or "",
+            "best_worst": best_worst or "",
+            "trade_summary": trade_summary or "",
+        },
         dedupe_key="final_report",
     )
