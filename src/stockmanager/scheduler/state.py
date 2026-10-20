@@ -1,0 +1,82 @@
+"""``state/scheduler.json`` (AS §3.10): scheduler bookkeeping only, not the books; always rebuildable.
+
+Written with no lock (AS ownership matrix §3.11): a crash leaves, at worst, a stale completed-slots list that the
+next evaluation run simply treats as not-yet-complete, so it re-derives (P7).
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from pathlib import Path
+
+from stockmanager.store.fsutil import atomic_write_text
+
+MAX_COMPLETED_SLOTS = 8
+
+
+@dataclass(frozen=True)
+class SchedulerState:
+    """``{anchor_date, completed_slots[<=8], last_tick, noticed_slots[]}`` (AS §3.10)."""
+
+    anchor_date: date | None = None
+    completed_slots: tuple[date, ...] = field(default_factory=tuple)
+    last_tick: datetime | None = None
+    noticed_slots: tuple[date, ...] = field(default_factory=tuple)
+
+    def to_json(self) -> str:
+        """Canonical JSON for ``state/scheduler.json``."""
+        payload = {
+            "anchor_date": self.anchor_date.isoformat() if self.anchor_date else None,
+            "completed_slots": [d.isoformat() for d in self.completed_slots],
+            "last_tick": self.last_tick.isoformat() if self.last_tick else None,
+            "noticed_slots": [d.isoformat() for d in self.noticed_slots],
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+
+    @classmethod
+    def from_json(cls, text: str) -> SchedulerState:
+        """Inverse of ``to_json``."""
+        data = json.loads(text)
+        return cls(
+            anchor_date=date.fromisoformat(data["anchor_date"]) if data.get("anchor_date") else None,
+            completed_slots=tuple(date.fromisoformat(d) for d in data.get("completed_slots", [])),
+            last_tick=datetime.fromisoformat(data["last_tick"]) if data.get("last_tick") else None,
+            noticed_slots=tuple(date.fromisoformat(d) for d in data.get("noticed_slots", [])),
+        )
+
+    def with_completed(self, slot: date) -> SchedulerState:
+        """New state with ``slot`` added to ``completed_slots`` (deduped, capped, anchor set on the first one)."""
+        slots = tuple(sorted({*self.completed_slots, slot}))[-MAX_COMPLETED_SLOTS:]
+        return dataclasses.replace(self, completed_slots=slots, anchor_date=self.anchor_date or slot)
+
+    def with_noticed(self, slot: date) -> SchedulerState:
+        """New state with ``slot`` added to ``noticed_slots`` (deduped)."""
+        return dataclasses.replace(self, noticed_slots=tuple(sorted({*self.noticed_slots, slot})))
+
+    def with_last_tick(self, now: datetime) -> SchedulerState:
+        """New state with ``last_tick`` set to ``now``."""
+        return dataclasses.replace(self, last_tick=now)
+
+
+def path(root: Path) -> Path:
+    """``<root>/state/scheduler.json``."""
+    return root / "state" / "scheduler.json"
+
+
+def load(root: Path) -> SchedulerState:
+    """Read ``state/scheduler.json``; an absent or unparsable file is a fresh, empty state."""
+    p = path(root)
+    if not p.exists():
+        return SchedulerState()
+    try:
+        return SchedulerState.from_json(p.read_text(encoding="utf-8"))
+    except (ValueError, KeyError, TypeError):
+        return SchedulerState()
+
+
+def save(root: Path, state: SchedulerState) -> None:
+    """Atomically write ``state/scheduler.json``."""
+    atomic_write_text(path(root), state.to_json())

@@ -55,6 +55,8 @@ class Config(BaseModel):
     auto_approve: bool = True
     veto_window_hours: int = Field(default=4, ge=1, le=168)
     evaluation_frequency: Literal["daily", "weekly", "biweekly"] = "weekly"
+    evaluation_day: Literal["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] = "saturday"
+    evaluation_time: str = Field(default="09:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     max_position_pct: Decimal = Field(default=Decimal(30), ge=1, le=100)
     position_alert_pct: Decimal = Field(default=Decimal(40), ge=1, le=100)
     max_trades_per_cycle: int = Field(default=3, ge=1, le=10)
@@ -79,6 +81,8 @@ SETTABLE_KEYS: frozenset[str] = frozenset(
         "auto_approve",
         "veto_window_hours",
         "evaluation_frequency",
+        "evaluation_day",
+        "evaluation_time",
         "max_position_pct",
         "position_alert_pct",
         "max_trades_per_cycle",
