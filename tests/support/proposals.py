@@ -61,3 +61,13 @@ def make_proposal(
         hold_alternative="hold instead",
         transitions=transitions or [genesis(created_at)],
     )
+
+
+def advance(doc: ProposalDoc, to_state: ProposalState, at: datetime, actor: str = "system:sweeper", cause: str = "test") -> ProposalDoc:
+    """Append one hash-chained transition to ``doc`` (callers pick a legal ``to_state``)."""
+    prev = doc.transitions[-1]
+    rec = TransitionRecord(
+        seq=prev.seq + 1, from_state=doc.state, to=to_state, at=at, actor=actor, cause=cause, prev_hash=prev.hash, hash=""
+    )
+    rec = rec.model_copy(update={"hash": chain_hash(prev.hash, rec.model_dump(mode="json", by_alias=True))})
+    return doc.model_copy(update={"state": to_state, "transitions": [*doc.transitions, rec]})

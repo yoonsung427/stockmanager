@@ -10,7 +10,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from stockmanager.config.llm import LLMConfig
 from stockmanager.config.proposals import ProposalConfig
@@ -27,6 +27,17 @@ class DiscordConfig(BaseModel):
     channel_id: str | None = None
 
 
+class NotificationTemplate(BaseModel):
+    """One catalogue entry (SS §10): maps a notification ``kind`` to its template text."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(min_length=1)
+    severity: Literal["info", "positive", "alert"] = "info"
+    title: str = Field(min_length=1)
+    body: str = ""
+
+
 class OpsConfig(BaseModel):
     """Operational settings (AS §3.6): file-edit only, never reachable via ``SET``."""
 
@@ -35,6 +46,25 @@ class OpsConfig(BaseModel):
     exec_delay_minutes: int = Field(default=5, ge=1)
     late_threshold_minutes: int = Field(default=10, ge=1)
     lock_stale_minutes: int = Field(default=15, ge=1)
+    visible_channels: list[str] = Field(default_factory=lambda: ["discord"])
+    notification_catalogue: list[NotificationTemplate] = Field(default_factory=list)
+
+    @field_validator("visible_channels")
+    @classmethod
+    def _channels_unique_nonblank(cls, v: list[str]) -> list[str]:
+        if any(not c.strip() for c in v):
+            raise ValueError("visible_channels entries must be non-blank")
+        if len(set(v)) != len(v):
+            raise ValueError("visible_channels entries must be unique")
+        return v
+
+    @field_validator("notification_catalogue")
+    @classmethod
+    def _catalogue_kinds_unique(cls, v: list[NotificationTemplate]) -> list[NotificationTemplate]:
+        kinds = [t.kind for t in v]
+        if len(set(kinds)) != len(kinds):
+            raise ValueError("notification_catalogue kinds must be unique")
+        return v
 
 
 class NewsOpsConfig(BaseModel):

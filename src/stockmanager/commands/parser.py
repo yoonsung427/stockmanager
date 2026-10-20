@@ -74,6 +74,8 @@ def parse_command(text: str) -> ParsedCommand | None:
     if verb in ("APPROVE", "RECONFIRM"):
         parts = rest.split()
         target = parts[0] if parts else None
+        if verb == "APPROVE" and target is not None and target.upper() == "OPENING":
+            target = "OPENING"
         return ParsedCommand(verb, target, None)
 
     if verb == "SET":

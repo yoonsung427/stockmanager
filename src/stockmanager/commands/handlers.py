@@ -1,7 +1,7 @@
 """Command handlers (AS §1.7): parse, authorize and execute. Every path returns a reply string (TS CMD-X01).
 
 Each handler is one ``Transaction`` where it mutates the books or proposals (AS §8.5); nothing here opens a file
-directly except the small non-books state files (``state/pending_close.json``, ``state/reconfirmed.json``) that AS
+directly except the small non-books state file ``state/pending_close.json`` that AS
 §4.2's proposed amendment excludes from "the books" (⚑AD9).
 """
 
@@ -19,14 +19,14 @@ from stockmanager.commands.auth import Sender, authorize
 from stockmanager.commands.parser import PROPOSAL_ID_RE, parse_command
 from stockmanager.config import BLOCKED_SET_PREFIXES, SETTABLE_KEYS, Config
 from stockmanager.domain import ids as domain_ids
-from stockmanager.domain.docs import ProposalDoc, Trade
-from stockmanager.domain.money import q4
+from stockmanager.domain.docs import ProposalDoc
 from stockmanager.domain.proposal_state import GENESIS_HASH, ProposalState, can_transition, chain_hash, is_terminal
+from stockmanager.domain.timeutil import add_elapsed
+from stockmanager.execution.engine import ExecutionEngine
 from stockmanager.notify import prepare as prepare_alert
 from stockmanager.notify.templates import system_pause_resume
-from stockmanager.pricing.errors import PriceError
 from stockmanager.store import FileStore, fsutil
-from stockmanager.store.lock import LockBusy
+from stockmanager.store.lock import PT, LockBusy
 from stockmanager.store.reconcile import format_log_line
 from stockmanager.store.transaction import GateError, ReconcileHalt
 
@@ -50,6 +50,7 @@ class CommandContext:
     clock: Clock
     calendar: SessionCalendar
     price_provider: PriceProvider
+    price_fallback: PriceProvider | None = None  # ``None``: the primary is retried in its place
 
 
 def handle(text: str, sender: Sender, ctx: CommandContext) -> str:
@@ -66,6 +67,8 @@ def handle(text: str, sender: Sender, ctx: CommandContext) -> str:
     if parsed.verb == "VETO":
         return cmd_veto(ctx, parsed.target, parsed.reason, sender)
     if parsed.verb == "APPROVE":
+        if parsed.target == "OPENING":
+            return cmd_approve_opening(ctx, sender)
         return cmd_approve(ctx, parsed.target, sender)
     if parsed.verb == "PAUSE":
         return cmd_pause(ctx, sender)
@@ -180,6 +183,28 @@ def cmd_approve(ctx: CommandContext, proposal_id: str | None, sender: Sender) ->
     return f"✅ Approved {proposal_id}."
 
 
+def cmd_approve_opening(ctx: CommandContext, sender: Sender) -> str:
+    """``APPROVE OPENING``: ``STAGED`` -> ``APPROVED`` (UX §2, TS CMD-A03/A04/A08). Fills nothing.
+
+    The opening job fills the staged picks at the next session open (AS §1.3 ``run_opening``); this only records the
+    owner's consent, which is why the reply names the open and not a fill.
+    """
+    if not ctx.store.portfolio_exists():
+        return "❌ Nothing to approve: no portfolio yet"
+    try:
+        with ctx.store.transaction("cmd:approve_opening") as txn:
+            status = txn.state.status
+            if status != "STAGED":
+                return f"❌ Nothing to approve (status {status})"
+            if not txn.state.config.get("staged_orders"):
+                return "❌ No staged picks"
+            txn.stage_portfolio(txn.state.model_copy(update={"status": "APPROVED"}))
+            opens_at = ctx.calendar.next_session_open_at_or_after(sender.sent_at)
+    except LockBusy:
+        return "❌ System busy"
+    return f"✅ Opening approved. The picks fill at the next open, {opens_at:%a %Y-%m-%d %H:%M} PT."
+
+
 # -- PAUSE / RESUME -----------------------------------------------------------------------------------------------
 
 
@@ -244,7 +269,7 @@ def cmd_close(ctx: CommandContext, sender: Sender) -> str:
         "sender": {"kind": sender.kind, "user_id": sender.user_id, "message_id": sender.message_id},
     }
     fsutil.atomic_write_text(_pending_close_path(ctx.store), json.dumps(payload, indent=2) + "\n")
-    return "✅ Close requested. Send CLOSE CONFIRM within 10 minutes to liquidate and close."
+    return "✅ Close requested. Send CLOSE CONFIRM within 10 minutes to run the final valuation and close."
 
 
 def cmd_close_confirm(ctx: CommandContext, sender: Sender) -> str:
@@ -259,65 +284,21 @@ def cmd_close_confirm(ctx: CommandContext, sender: Sender) -> str:
         return "❌ CLOSE CONFIRM must come from the same sender that requested CLOSE"
     if sender.sent_at - requested_at > CLOSE_CONFIRM_WINDOW:
         return "❌ CLOSE request expired; send CLOSE again"
-    try:
-        with ctx.store.transaction("cmd:close_confirm") as txn:
-            txn.require(status=["LIVE", "PAUSED"])
-            portfolio = txn.state
-            now = sender.sent_at
-            new_trades: list[Trade] = []
-            cash = portfolio.cash
-            for position in portfolio.positions:
-                try:
-                    quote = ctx.price_provider.get_price(position.ticker, now.date(), "close")
-                except PriceError as exc:
-                    return f"❌ Could not fetch a close price for {position.ticker}: {exc}"
-                cost = q4(position.shares * quote.price)
-                cash = q4(cash + cost)
-                tid = domain_ids.trade_id(f"P-CLOSE-{now.date().isoformat()}", f"sell-{position.ticker}")
-                new_trades.append(
-                    Trade(
-                        trade_id=tid,
-                        timestamp=now,
-                        action="SELL",
-                        ticker=position.ticker,
-                        shares=position.shares,
-                        fill_price=quote.price,
-                        cost=cost,
-                        price_source=quote.source,
-                        thesis="system close",
-                    )
-                )
-            new_doc = portfolio.model_copy(
-                update={"status": "CLOSED", "cash": cash, "positions": [], "trades": [*portfolio.trades, *new_trades]}
-            )
-            txn.stage_portfolio(new_doc)
-            if new_trades:
-                txn.stage_log([format_log_line(t) for t in new_trades])
-    except GateError as exc:
-        return f"❌ {exc}"
-    except LockBusy:
+    engine = ExecutionEngine(
+        ctx.store, ctx.clock, ctx.calendar, ctx.price_provider, ctx.price_fallback or ctx.price_provider
+    )
+    result = engine.run_final_valuation(benchmark=ctx.cfg.benchmark)
+    if result.outcome == "failed_closed":
+        return f"❌ Cannot price the portfolio, so nothing was closed. Send CLOSE CONFIRM again to retry. ({result.detail})"
+    if result.outcome == "lock_busy":
         return "❌ System busy"
+    if result.outcome == "skipped_not_live":
+        return f"❌ Cannot close: {result.detail}"
     path.unlink(missing_ok=True)
-    return "✅ Closed. All positions liquidated at close prices."
+    return "✅ Closed. The final report is recorded; positions are kept, not sold."
 
 
 # -- RECONFIRM -------------------------------------------------------------------------------------------------
-
-
-def _reconfirmed_path(store: FileStore) -> Path:
-    return store.root / "state" / "reconfirmed.json"
-
-
-def _reconfirmed_ids(store: FileStore) -> set[str]:
-    path = _reconfirmed_path(store)
-    if not path.exists():
-        return set()
-    return set(json.loads(path.read_text(encoding="utf-8")))
-
-
-def _mark_reconfirmed(store: FileStore, proposal_id: str) -> None:
-    ids = _reconfirmed_ids(store) | {proposal_id}
-    fsutil.atomic_write_text(_reconfirmed_path(store), json.dumps(sorted(ids), indent=2) + "\n")
 
 
 def _next_seq(store: FileStore, day: date) -> int:
@@ -330,42 +311,58 @@ def _next_seq(store: FileStore, day: date) -> int:
 
 
 def cmd_reconfirm(ctx: CommandContext, proposal_id: str | None, sender: Sender) -> str:
-    """Reconfirm an expired proposal: creates a new proposal immediately (TS CMD-RC01..06)."""
+    """Reconfirm an ``EXPIRED`` proposal (AS §8.7, TS CMD-RC01..06).
+
+    Creates the replacement immediately so the reply can carry its ID: ``explicit`` mode whatever the config says,
+    ``reconfirms`` pointing at the original, ``reconfirm_check == "pending"``. The original gets ``reconfirmed_as``
+    in the same transaction, which is what makes a second ``RECONFIRM`` a no-op. Fresh pricing, the cap re-check
+    and the thesis re-check are the next tick's ``reconfirm:<id>`` job (``evaluation/reconfirm.py``), never this
+    handler: a slow network or LLM call must not sit inside a chat reply.
+    """
     if proposal_id is None or not PROPOSAL_ID_RE.fullmatch(proposal_id):
         return "❌ RECONFIRM needs a valid proposal ID, e.g. RECONFIRM P-2026-10-24-01"
-    doc = _load_proposal(ctx.store, proposal_id)
-    if doc is None:
-        return f"❌ No such proposal: {proposal_id}"
-    if doc.state != "EXPIRED":
-        return f"❌ Cannot RECONFIRM {proposal_id}: it is {doc.state}, not EXPIRED"
-    if proposal_id in _reconfirmed_ids(ctx.store):
-        return f"❌ {proposal_id} has already been reconfirmed"
-    now = sender.sent_at
-    new_pid = domain_ids.proposal_id(now.date(), _next_seq(ctx.store, now.date()))
-    execute_at = ctx.calendar.next_session_open_at_or_after(now + timedelta(hours=doc.veto_window_hours))
-    expires_at = execute_at + timedelta(minutes=ctx.cfg.proposal_grace_minutes)
-    new_legs = [leg.model_copy(update={"trade_id": domain_ids.trade_id(new_pid, leg.leg)}) for leg in doc.legs]
-    first = _genesis_transition(now, _actor(sender), f"reconfirmed from {proposal_id}")
-    new_doc = doc.model_copy(
-        update={
-            "proposal_id": new_pid,
-            "created_at": now,
-            "state": "PROPOSED",
-            "execute_at": execute_at,
-            "expires_at": expires_at,
-            "fill_session_date": execute_at.date(),
-            "legs": new_legs,
-            "veto_deadline": None,
-            "transitions": [first],
-        }
-    )
+    now = sender.sent_at.astimezone(PT)
     try:
         with ctx.store.transaction("cmd:reconfirm") as txn:
-            txn.stage_proposals({new_pid: new_doc})
+            txn.require(status="LIVE")
+            txn.reconcile()
+            doc = _load_proposal(ctx.store, proposal_id)
+            if doc is None:
+                return "❌ Unknown or expired proposal ID"
+            if doc.state != "EXPIRED":
+                return f"❌ Not expired: {proposal_id} is {doc.state}"
+            if doc.reconfirmed_as is not None:
+                return f"❌ {proposal_id} was already reconfirmed as {doc.reconfirmed_as}"
+            new_pid = domain_ids.proposal_id(now.date(), _next_seq(ctx.store, now.date()))
+            execute_at = ctx.calendar.next_session_open_at_or_after(
+                add_elapsed(now, timedelta(hours=doc.veto_window_hours))
+            )
+            first = _genesis_transition(now, "system:reconfirm", f"reconfirm of {proposal_id} requested by {_actor(sender)}")
+            new_doc = doc.model_copy(
+                update={
+                    "proposal_id": new_pid,
+                    "created_at": now,
+                    "state": "PROPOSED",
+                    "approval_mode": "explicit",  # never auto, whatever auto_approve says (TS EDGE-23)
+                    "execute_at": execute_at,
+                    "expires_at": execute_at + timedelta(minutes=ctx.cfg.proposal_grace_minutes),
+                    "fill_session_date": execute_at.date(),
+                    "legs": [leg.model_copy(update={"trade_id": domain_ids.trade_id(new_pid, leg.leg)}) for leg in doc.legs],
+                    "veto_deadline": None,
+                    "reconfirms": proposal_id,
+                    "reconfirmed_as": None,
+                    "reconfirm_check": "pending",
+                    "transitions": [first],
+                }
+            )
+            txn.stage_proposals({new_pid: new_doc, proposal_id: doc.model_copy(update={"reconfirmed_as": new_pid})})
+    except GateError as exc:
+        return f"❌ {exc}"
+    except ReconcileHalt:
+        return "❌ System halted"
     except LockBusy:
         return "❌ System busy"
-    _mark_reconfirmed(ctx.store, proposal_id)
-    return f"✅ Reconfirmed {proposal_id} as {new_pid}."
+    return f"✅ Reconfirm accepted: {proposal_id} -> {new_pid}. It is re-priced and re-checked on the next tick, then needs your APPROVE."
 
 
 # -- RECONCILE -------------------------------------------------------------------------------------------------

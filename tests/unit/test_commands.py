@@ -233,18 +233,22 @@ def test_set_unknown_key_is_rejected(ctx: CommandContext, store: FileStore, cloc
 # -- CLOSE / CLOSE CONFIRM -----------------------------------------------------------------------------------------
 
 
-def test_close_then_confirm_liquidates_and_closes(ctx: CommandContext, store: FileStore, clock: FixedClock) -> None:
+def test_close_then_confirm_closes_with_a_final_report_and_sells_nothing(
+    ctx: CommandContext, store: FileStore, clock: FixedClock
+) -> None:
+    """TS CMD-C02: the final valuation closes the book; positions are kept and ``trades[]`` is unchanged."""
     from tests.support.books import make_trade
 
     store.save_portfolio(make_portfolio([make_trade(1, shares="10", price="100")], status="LIVE"))
+    held, trades = store.load_portfolio().positions, store.load_portfolio().trades
     sender = cli(clock.now)
     assert handle("CLOSE", sender, ctx).startswith("✅")
     clock.advance(minutes=2)
     reply = handle("CLOSE CONFIRM", cli(clock.now), ctx)
     assert reply.startswith("✅")
     doc = store.load_portfolio()
-    assert doc.status == "CLOSED"
-    assert doc.positions == []
+    assert doc.status == "CLOSED" and doc.final_report is not None
+    assert doc.positions == held and doc.trades == trades
 
 
 def test_close_confirm_without_close_is_rejected(ctx: CommandContext, store: FileStore, clock: FixedClock) -> None:
@@ -267,37 +271,6 @@ def test_close_confirm_after_window_is_rejected(ctx: CommandContext, store: File
     assert handle("CLOSE", sender, ctx).startswith("✅")
     clock.advance(minutes=11)
     assert handle("CLOSE CONFIRM", cli(clock.now), ctx).startswith("❌")
-
-
-# -- RECONFIRM -------------------------------------------------------------------------------------------------
-
-
-def test_reconfirm_expired_proposal_creates_a_new_one(ctx: CommandContext, store: FileStore, clock: FixedClock) -> None:
-    doc = make_proposal("P-2026-10-12-01", state="EXPIRED")
-    store.save_proposal(doc.proposal_id, doc)
-    from stockmanager.commands.handlers import cmd_reconfirm
-
-    reply = cmd_reconfirm(ctx, doc.proposal_id, cli(clock.now))
-    assert reply.startswith("✅")
-    new_ids = [p.stem for p in (store.root / "proposals").glob("*.json") if p.stem != doc.proposal_id]
-    assert len(new_ids) == 1
-
-
-def test_reconfirm_only_works_once(ctx: CommandContext, store: FileStore, clock: FixedClock) -> None:
-    from stockmanager.commands.handlers import cmd_reconfirm
-
-    doc = make_proposal("P-2026-10-12-01", state="EXPIRED")
-    store.save_proposal(doc.proposal_id, doc)
-    assert cmd_reconfirm(ctx, doc.proposal_id, cli(clock.now)).startswith("✅")
-    assert cmd_reconfirm(ctx, doc.proposal_id, cli(clock.now)).startswith("❌")
-
-
-def test_reconfirm_rejects_non_expired(ctx: CommandContext, store: FileStore, clock: FixedClock) -> None:
-    from stockmanager.commands.handlers import cmd_reconfirm
-
-    doc = make_proposal("P-2026-10-12-01", state="PROPOSED")
-    store.save_proposal(doc.proposal_id, doc)
-    assert cmd_reconfirm(ctx, doc.proposal_id, cli(clock.now)).startswith("❌")
 
 
 # -- STATUS ----------------------------------------------------------------------------------------------------

@@ -30,6 +30,8 @@ from stockmanager.domain.ports import PriceProvider, SessionCalendar, SymbolVeri
 from stockmanager.evaluation.engine import EvaluationEngine
 from stockmanager.evaluation.input_builder import make_reasoner_input_builder
 from stockmanager.evaluation.reasoner import Reasoner, build_reasoner
+from stockmanager.evaluation.reconfirm import ReconfirmEngine
+from stockmanager.evaluation.thesis_checker import ThesisReview
 from stockmanager.execution.engine import ExecutionEngine
 from stockmanager.news import NewsResult
 from stockmanager.news.config import NewsConfig
@@ -39,6 +41,7 @@ from stockmanager.news.fetchers.searxng import SearxngFetcher
 from stockmanager.news.fetchers.yahoo_rss import YahooRssFetcher
 from stockmanager.news.pipeline import run_news_stage
 from stockmanager.notify.deliver import Channel
+from stockmanager.notify.templates import use_catalogue
 from stockmanager.store import FileStore
 from stockmanager.store.lock import Clock, now_pt
 
@@ -122,6 +125,7 @@ class AppContext:
     extractor: Extractor
     reasoner: Reasoner
     evaluation: EvaluationEngine
+    reconfirm: ReconfirmEngine
     command_ctx: CommandContext
     notify_channels: list[Channel] = field(default_factory=list)
     discord_bot_token: str | None = None
@@ -152,6 +156,7 @@ def create_app(workspace_path: str | Path, config_path: str | Path | None = None
 
     load_secrets()
     cfg = load_config(workspace, Path(config_path) if config_path is not None else None)
+    use_catalogue(cfg.ops.notification_catalogue)
     store = FileStore(workspace, clock=clock)
 
     calendar = SimpleWeekdayCalendar()
@@ -176,7 +181,9 @@ def create_app(workspace_path: str | Path, config_path: str | Path | None = None
     extractor = build_extractor(news_config)
     reasoner = build_reasoner(cfg.llm, cfg.proposals)
 
-    command_ctx = CommandContext(store=store, cfg=cfg, clock=clock, calendar=calendar, price_provider=price_primary)
+    command_ctx = CommandContext(
+        store=store, cfg=cfg, clock=clock, calendar=calendar, price_provider=price_primary, price_fallback=price_fallback
+    )
 
     notify_channels: list[Channel] = []
     discord_bot_token = os.environ.get("DISCORD_BOT_TOKEN") or None
@@ -199,6 +206,9 @@ def create_app(workspace_path: str | Path, config_path: str | Path | None = None
         extractor=extractor,
         reasoner=reasoner,
         evaluation=None,  # type: ignore[arg-type]  # set just below; EvaluationEngine needs app_ctx.run_news_stage
+        reconfirm=ReconfirmEngine(
+            store, clock, calendar, symbol_verifier, price_primary, price_fallback, ThesisReview(store)
+        ),
         command_ctx=command_ctx,
         notify_channels=notify_channels,
         discord_bot_token=discord_bot_token,

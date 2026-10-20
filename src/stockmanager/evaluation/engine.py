@@ -14,13 +14,17 @@ from typing import Literal
 
 from stockmanager.config.model import Config
 from stockmanager.config.proposals import ProposalConfig
-from stockmanager.domain.docs import PortfolioDoc, PriceTable
+from stockmanager.domain.docs import PortfolioDoc, PriceTable, ProposalDoc
 from stockmanager.domain.ports import PriceProvider, SessionCalendar, SymbolVerifier
+from stockmanager.domain.proposal_state import is_terminal
+from stockmanager.domain.sessions import last_completed_session
+from stockmanager.domain.timeutil import PT
 from stockmanager.evaluation.builder import ProposalBuilder
 from stockmanager.evaluation.reasoner import Reasoner, ReasonerFailure
 from stockmanager.evaluation.reasoner_io import ReasonerInput, ReasonerOutput
 from stockmanager.news import NewsResult
-from stockmanager.notify.outbox import prepare
+from stockmanager.notify.emit import emit_reconcile_divergence, emit_run_skipped_busy
+from stockmanager.notify.outbox import prepare, raised_dedupe_keys
 from stockmanager.notify.templates import evaluation_complete, news_unavailable, veto_window_open
 from stockmanager.pricing.errors import ValuationUnavailable
 from stockmanager.pricing.service import PriceService
@@ -53,6 +57,22 @@ NewsRunner = Callable[[str, PortfolioDoc], NewsResult]
 
 #: Projects the cycle's evidence into a ``ReasonerInput`` (AS §7.3): cycle id, snapshot, valuation, news, config.
 ReasonerInputBuilder = Callable[[str, PortfolioDoc, PriceTable, NewsResult, Config], ReasonerInput]
+
+
+def _unannounced(proposals: list[ProposalDoc], cycle_date: date, announced: set[str]) -> list[ProposalDoc]:
+    """Open proposals an earlier run of this cycle created whose ``veto_window_open`` alert was never queued.
+
+    That is a run that died between committing the proposal file and the alerts (AS §8.5 steps 3 and 7): the owner
+    was never told, so a retry replaces the proposal instead of leaving a second one beside it (TS NN-29, AC-02).
+    """
+    return [
+        p
+        for p in proposals
+        if not is_terminal(p.state)
+        and p.transitions[0].actor == "system:evaluation"
+        and p.created_at.astimezone(PT).date() == cycle_date
+        and f"veto_window_open:{p.proposal_id}" not in announced
+    ]
 
 
 class EvaluationEngine:
@@ -95,13 +115,17 @@ class EvaluationEngine:
             with self._store.transaction("evaluation:precheck", max_attempts=1, sleep_seconds=0) as txn:
                 txn.reconcile()
         except ReconcileHalt as exc:
+            emit_reconcile_divergence(self._store, exc.divergences)
             return RunResult("halted_reconcile", "; ".join(exc.divergences))
         except LockBusy:
+            emit_run_skipped_busy(self._store, "evaluation", slot.cycle_id)
             return RunResult("lock_busy")
         rev_before = snapshot.rev
 
         # Phase B: gather and think, no lock.
-        valuation_date = date.fromisoformat(slot.cycle_id)
+        cycle_date = date.fromisoformat(slot.cycle_id)
+        # Prices are the last completed session's close: a Saturday cycle has no bar of its own (TS EDGE-01/EDGE-14).
+        valuation_date = last_completed_session(self._calendar, slot.slot_time)
         tickers = sorted({p.ticker for p in snapshot.positions} | {cfg.benchmark})
         try:
             valuation = self._prices.valuation(tickers, valuation_date, self._primary, self._fallback)
@@ -109,13 +133,30 @@ class EvaluationEngine:
             return RunResult("failed_closed", str(exc))
 
         news = self._news_runner(slot.cycle_id, snapshot)
-        reasoner_input = self._build_input(slot.cycle_id, snapshot, valuation, news, cfg)
+        builder = ProposalBuilder(self._calendar, self._verifier)
         failure_reason = ""
-        try:
-            intent: ReasonerOutput = self._reasoner.evaluate(reasoner_input)
-        except ReasonerFailure as exc:
+        if news.news_status == "unavailable":
+            # No evidence, no proposals (TS EDGE-09 / D14): the Reasoner is not asked, the report still goes out.
             intent = ReasonerOutput(summary="", hold_alternative="", holdings=[], ideas=[])
-            failure_reason = exc.reason
+            failure_reason = "news_unavailable"
+        else:
+            reasoner_input = self._build_input(slot.cycle_id, snapshot, valuation, news, cfg)
+            try:
+                intent = self._reasoner.evaluate(reasoner_input)
+            except ReasonerFailure as exc:
+                intent = ReasonerOutput(summary="", hold_alternative="", holdings=[], ideas=[])
+                failure_reason = exc.reason
+            # A buy of a name not yet held can only be priced once the Reasoner has named it. Re-value with it
+            # included so the table stays one source (SS §6); if that fails the holdings table stands and the
+            # builder drops the idea as ``unpriced`` rather than the whole cycle failing on one bad ticker.
+            new_names = builder.unheld_buy_tickers(intent, snapshot)
+            if new_names:
+                try:
+                    valuation = self._prices.valuation(
+                        sorted({*tickers, *new_names}), valuation_date, self._primary, self._fallback
+                    )
+                except ValuationUnavailable:
+                    pass
 
         # Phase C: commit, under the lock.
         proposal_cfg = ProposalConfig(
@@ -125,33 +166,45 @@ class EvaluationEngine:
             veto_window_hours=cfg.veto_window_hours,
             proposal_grace_minutes=cfg.proposal_grace_minutes,
         )
-        builder = ProposalBuilder(self._calendar, self._verifier)
         try:
             with self._store.transaction("evaluation") as txn:
                 txn.require(status="LIVE")
                 txn.reconcile()
                 if txn.state.rev != rev_before:
                     return RunResult("aborted_state_changed", "rev changed since phase A; the tick retries")
+                now = self._clock()
+                on_disk = self._store.load_proposals()
+                orphans = {p.proposal_id: p for p in _unannounced(on_disk, cycle_date, raised_dedupe_keys(self._store.root))}
                 proposals_dir = self._store.root / "proposals"
-                existing_ids = [p.stem for p in proposals_dir.glob("*.json")] if proposals_dir.exists() else []
+                file_ids = [p.stem for p in proposals_dir.glob("*.json")] if proposals_dir.exists() else []
+                existing_ids = [i for i in file_ids if i not in orphans]  # an orphan's id is free to be overwritten
                 result = builder.build(intent, txn.state, valuation, proposal_cfg, self._clock, existing_ids)
-                if result.proposals:
-                    txn.stage_proposals({p.proposal_id: p for p in result.proposals})
+                staged = {p.proposal_id: p for p in result.proposals}
+                for pid, orphan in orphans.items():
+                    if pid not in staged:  # nothing took over its id: close it out, the file cannot be deleted
+                        staged[pid] = orphan.transition(
+                            "VETOED", "system:evaluation", f"superseded: cycle {slot.cycle_id} re-ran", now
+                        )
+                if staged:
+                    txn.stage_proposals(staged)
 
                 # Phase D: report -- alerts are enqueued in the same commit (AS §1.2 step 8).
-                now = self._clock()
                 alerts: dict[str, str] = {}
-                summary = prepare(evaluation_complete(f"eval-{slot.cycle_id}", valuation_date, slot.late), now)
+                summary = prepare(evaluation_complete(f"eval-{slot.cycle_id}", cycle_date, slot.late), now)
                 alerts[f"{summary.alert_id}.json"] = summary.to_json()
                 for p in result.proposals:
                     a = prepare(veto_window_open(p.proposal_id, p.veto_window_hours), now)
                     alerts[f"{a.alert_id}.json"] = a.to_json()
                 if news.news_status == "unavailable":
-                    a2 = prepare(news_unavailable(valuation_date), now)
+                    a2 = prepare(news_unavailable(cycle_date), now)
                     alerts[f"{a2.alert_id}.json"] = a2.to_json()
                 txn.stage_alerts(alerts)
         except LockBusy:
+            emit_run_skipped_busy(self._store, "evaluation", slot.cycle_id)
             return RunResult("lock_busy")
+        except ReconcileHalt as exc:
+            emit_reconcile_divergence(self._store, exc.divergences)
+            return RunResult("halted_reconcile", "; ".join(exc.divergences))
         except GateError as exc:
             return RunResult("skipped_not_live", str(exc))
         return RunResult("completed", failure_reason)

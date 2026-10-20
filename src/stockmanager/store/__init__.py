@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from stockmanager.domain.docs import PortfolioDoc
+from stockmanager.domain.docs import Fact, PortfolioDoc, ProposalDoc
 from stockmanager.store import fsutil
 from stockmanager.store.lock import Clock, LockMeta, PidChecker, PortfolioLock, now_pt
 
@@ -105,6 +105,36 @@ class FileStore:
         if isinstance(version, int) and version > SUPPORTED_SCHEMA_VERSION:
             raise SchemaTooNew(f"portfolio.json is schema_version {version}; this build understands up to 1")
         return PortfolioDoc.model_validate_json(json.dumps(raw))
+
+    def load_proposals(self) -> list[ProposalDoc]:
+        """Every parseable ``proposals/*.json``, in file-name order. Unparsable files are quarantined (AS §10.1)."""
+        directory = self.root / "proposals"
+        if not directory.exists():
+            return []
+        out: list[ProposalDoc] = []
+        for path in sorted(directory.glob("*.json")):
+            try:
+                out.append(ProposalDoc.model_validate_json(path.read_text(encoding="utf-8")))
+            except ValueError:
+                continue
+        return out
+
+    def load_facts(self) -> list[Fact]:
+        """Every valid fact in ``extracted-facts/<cycle>.json``, de-duplicated by ``fact_id`` (later cycles win)."""
+        directory = self.root / "extracted-facts"
+        by_id: dict[str, Fact] = {}
+        for path in sorted(directory.glob("*.json")) if directory.exists() else []:
+            try:
+                rows = json.loads(path.read_text(encoding="utf-8")).get("facts", [])
+            except (OSError, ValueError, AttributeError):
+                continue
+            for row in rows:
+                try:
+                    fact = Fact.model_validate_json(json.dumps(row))
+                except ValueError:
+                    continue  # an invalid row never reaches a decision
+                by_id[fact.fact_id] = fact
+        return list(by_id.values())
 
     # -- writes --------------------------------------------------------------------------------------------------
 

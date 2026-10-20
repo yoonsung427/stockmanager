@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd alternative to ops/crontab.example. Install (nothing in this repo does it for you):
+    cp ops/com.stockmanager.tick.plist.example ~/Library/LaunchAgents/com.stockmanager.tick.plist
+    # edit /path/to/workspace below, then:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.stockmanager.tick.plist
+  Verify with: /Users/yoonsung/stockmanager/.venv/bin/python -m stockmanager doctor (pass the workspace flag)
+
+  Why StartCalendarInterval and not StartInterval=300: StartInterval counts from load time, so ticks would drift
+  off the 5-minute boundaries. Twelve Minute entries fire at :00, :05, ... :55, the same as cron's */5. Like cron,
+  launchd coalesces missed firings after sleep into one run, which is fine: the tick derives what is due (AS §1.5).
+  Why 5 minutes: see ops/crontab.example. Ticks are single-flight, so overlap is harmless.
+  Create the log directory first; launchd will not.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.stockmanager.tick</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/yoonsung/stockmanager/.venv/bin/python</string>
+        <string>-m</string>
+        <string>stockmanager</string>
+        <string>tick</string>
+        <string>--workspace</string>
+        <string>/path/to/workspace</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Minute</key><integer>5</integer></dict>
+        <dict><key>Minute</key><integer>10</integer></dict>
+        <dict><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Minute</key><integer>20</integer></dict>
+        <dict><key>Minute</key><integer>25</integer></dict>
+        <dict><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Minute</key><integer>35</integer></dict>
+        <dict><key>Minute</key><integer>40</integer></dict>
+        <dict><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Minute</key><integer>50</integer></dict>
+        <dict><key>Minute</key><integer>55</integer></dict>
+    </array>
+    <key>StandardOutPath</key>
+    <string>/path/to/workspace/logs/tick.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/workspace/logs/tick.log</string>
+</dict>
+</plist>

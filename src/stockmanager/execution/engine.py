@@ -20,14 +20,15 @@ from stockmanager.domain.ids import opening_proposal_id, trade_id
 from stockmanager.domain.money import q4
 from stockmanager.domain.ports import PriceProvider, SessionCalendar
 from stockmanager.domain.proposal_state import GENESIS_HASH, ProposalState, can_transition, chain_hash
+from stockmanager.notify.emit import emit_reconcile_divergence, emit_run_skipped_busy
 from stockmanager.notify.outbox import prepare
-from stockmanager.notify.templates import price_source_failure, trade_executed
+from stockmanager.notify.templates import final_report, price_source_failure, proposal_voided, trade_executed
 from stockmanager.pricing.errors import PriceError, ValuationUnavailable
 from stockmanager.pricing.service import PriceService
 from stockmanager.store import FileStore
-from stockmanager.store.lock import Clock, LockBusy
+from stockmanager.store.lock import PT, Clock, LockBusy
 from stockmanager.store.reconcile import format_log_line
-from stockmanager.store.transaction import GateError
+from stockmanager.store.transaction import GateError, ReconcileHalt
 
 Outcome = Literal[
     "completed",
@@ -201,7 +202,7 @@ class ExecutionEngine:
                         proceeds[leg.leg] = value
                         held[leg.ticker] = q4(held.get(leg.ticker, Decimal(0)) - shares)
                         cash = q4(cash + value)
-                        trades.append(self._trade(leg.trade_id, now, "SELL", leg.ticker, shares, quote, ""))
+                        trades.append(self._trade(leg.trade_id, cur.execute_at, "SELL", leg.ticker, shares, quote, ""))
                     else:
                         budget = (
                             proceeds.get(leg.size.source_leg or "", Decimal(0)) * (leg.size.fraction or Decimal(0))
@@ -214,12 +215,14 @@ class ExecutionEngine:
                         cost = q4(shares * quote.price)
                         cash = q4(cash - cost)
                         held[leg.ticker] = q4(held.get(leg.ticker, Decimal(0)) + shares)
-                        trades.append(self._trade(leg.trade_id, now, "BUY", leg.ticker, shares, quote, leg.thesis))
+                        trades.append(self._trade(leg.trade_id, cur.execute_at, "BUY", leg.ticker, shares, quote, leg.thesis))
 
                 # Step 7: void checks (whole-proposal; no partial or resized fill survives a void).
                 void_reason = self._void_reason(cur, txn.state, quotes, held, cash, len(trades))
                 if void_reason is not None:
                     txn.stage_proposals({proposal_id: _transition(cur, "VOIDED", "system:execution", void_reason, now)})
+                    voided = prepare(proposal_voided(proposal_id, void_reason), now)
+                    txn.stage_alerts({f"{voided.alert_id}.json": voided.to_json()})
                     return RunResult("voided", void_reason)
 
                 # Step 9: apply.
@@ -245,7 +248,11 @@ class ExecutionEngine:
                     alerts[f"{a.alert_id}.json"] = a.to_json()
                 txn.stage_alerts(alerts)
         except LockBusy:
+            emit_run_skipped_busy(self._store, f"execution:{proposal_id}", doc.execute_at.isoformat())
             return RunResult("lock_busy")
+        except ReconcileHalt as exc:
+            emit_reconcile_divergence(self._store, exc.divergences)
+            raise  # the job stops; the tick's catch-all turns it into exit code 1 (TS NN-26)
         except GateError as exc:
             return RunResult("skipped_not_live", str(exc))
         # Step 11: unlock; alert delivery is best-effort and happens on the next tick's outbox drain.
@@ -314,7 +321,10 @@ class ExecutionEngine:
         if snapshot.status != "APPROVED":
             return RunResult("skipped_not_live", snapshot.status)
         now = self._clock()
-        session_open = self._calendar.next_session_open_at_or_after(now)
+        # Today's open, not the next one: a cron tick never lands on 06:30:00.000, and the fill is stamped with the
+        # open whatever the run time (TS E2E-06 / EDGE-04). On a closed day this yields a later date, i.e. not yet.
+        midnight = now.astimezone(PT).replace(hour=0, minute=0, second=0, microsecond=0)
+        session_open = self._calendar.next_session_open_at_or_after(midnight)
         if session_open > now:
             return RunResult("no_op", "the session has not opened yet; re-arms next tick")
         staged: list[dict[str, Any]] = list(snapshot.config.get("staged_orders", []))
@@ -382,7 +392,11 @@ class ExecutionEngine:
                     alerts[f"{a.alert_id}.json"] = a.to_json()
                 txn.stage_alerts(alerts)
         except LockBusy:
+            emit_run_skipped_busy(self._store, "execution:opening", session_date.isoformat())
             return RunResult("lock_busy")
+        except ReconcileHalt as exc:
+            emit_reconcile_divergence(self._store, exc.divergences)
+            raise  # the job stops; the tick's catch-all turns it into exit code 1 (TS NN-26)
         except GateError as exc:
             return RunResult("skipped_not_live", str(exc))
         return RunResult("completed")
@@ -428,13 +442,11 @@ class ExecutionEngine:
                 txn.reconcile()
                 positions_value = q4(sum((p.shares * prices[p.ticker] for p in txn.state.positions), Decimal(0)))
                 nav = q4(txn.state.cash + positions_value)
-                final_report = {
-                    "ending_value": str(nav),
-                    "roi_pct": str((nav - txn.state.start_cash) / txn.state.start_cash * 100) if txn.state.start_cash > 0 else None,
-                    "source": source,
-                    "as_of": session_date.isoformat(),
-                }
-                new_doc = txn.state.model_copy(update={"status": "CLOSED", "closed_at": now, "final_report": final_report})
+                roi_pct = (
+                    str(q4((nav - txn.state.start_cash) / txn.state.start_cash * 100)) if txn.state.start_cash > 0 else None
+                )
+                report_doc = {"ending_value": str(nav), "roi_pct": roi_pct, "source": source, "as_of": session_date.isoformat()}
+                new_doc = txn.state.model_copy(update={"status": "CLOSED", "closed_at": now, "final_report": report_doc})
                 txn.stage_portfolio(new_doc)
                 txn.stage_extras(
                     nav_rows=[
@@ -456,8 +468,14 @@ class ExecutionEngine:
                         staged[p.proposal_id] = _transition(p, "CANCELLED_CLOSED", "system:close", "system closed", now)
                 if staged:
                     txn.stage_proposals(staged)
+                alert = prepare(final_report(str(nav), roi_pct, source, session_date), now)
+                txn.stage_alerts({f"{alert.alert_id}.json": alert.to_json()})
         except LockBusy:
+            emit_run_skipped_busy(self._store, "execution:final_valuation", session_date.isoformat())
             return RunResult("lock_busy")
+        except ReconcileHalt as exc:
+            emit_reconcile_divergence(self._store, exc.divergences)
+            raise  # the job stops; the tick's catch-all turns it into exit code 1 (TS NN-26)
         except GateError as exc:
             return RunResult("skipped_not_live", str(exc))
         pending_close = self._store.root / "state" / "pending_close.json"

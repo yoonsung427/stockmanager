@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import fcntl
 import os
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+from stockmanager.domain.timeutil import add_elapsed
 from stockmanager.notify.outbox import Alert, enqueue
 from stockmanager.store import FileStore
 from stockmanager.store import fsutil as _fsutil
@@ -74,7 +76,7 @@ def render(alert: Alert, channel: str, now: datetime) -> Rendered:
     """Render ``alert`` for ``channel`` as of ``now``: late-bound fields (veto deadline) are filled in here."""
     body = alert.body
     if "window_hours" in alert.binds:
-        deadline = now + timedelta(hours=int(alert.binds["window_hours"]))
+        deadline = add_elapsed(now, timedelta(hours=int(alert.binds["window_hours"])))
         body = body.format(deadline=deadline.isoformat())
     commands_block = "\n".join(alert.commands)
     if channel == "discord":
@@ -102,8 +104,21 @@ def _backoff_seconds(attempts: int) -> float:
     return float(min(BACKOFF_FLOOR_S * (2 ** max(attempts - 1, 0)), BACKOFF_CAP_S))
 
 
-def deliver_pending(store: FileStore, channels: Sequence[Channel], clock: Clock, budget: int = 100) -> list[str]:
+def deliver_pending(
+    store: FileStore,
+    channels: Sequence[Channel],
+    clock: Clock,
+    budget: int = 100,
+    *,
+    time_budget: float | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> list[str]:
     """Deliver up to ``budget`` pending alerts, oldest first, serialised by ``alerts/.deliver.lock``.
+
+    ``time_budget`` (seconds, AS §1.5's ``budget=20 s``) additionally bounds the drain: once it has elapsed no
+    further send is started, so the rest of the queue waits for the next call. A send already in flight is not
+    interrupted (the channel's own HTTP timeout bounds it). Progress made before the cutoff is still recorded.
+    The clock for the budget is ``monotonic`` so wall-clock steps cannot extend or cut it short.
 
     Returns the ``alert_id`` of every (alert, channel) send that succeeded this call.
     """
@@ -113,13 +128,30 @@ def deliver_pending(store: FileStore, channels: Sequence[Channel], clock: Clock,
     fd = os.open(guard_path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        return _deliver_locked(store, channels, clock, budget, pending_dir)
+        out_of_time = _deadline(time_budget, monotonic)
+        return _deliver_locked(store, channels, clock, budget, pending_dir, out_of_time)
     finally:
         os.close(fd)
 
 
+def _deadline(time_budget: float | None, monotonic: Callable[[], float]) -> Callable[[], bool]:
+    """A predicate that turns true once ``time_budget`` seconds have passed since this call (never, if ``None``).
+
+    Started after ``.deliver.lock`` is held, so time spent waiting on another drainer is not charged to the budget.
+    """
+    if time_budget is None:
+        return lambda: False
+    deadline = monotonic() + time_budget
+    return lambda: monotonic() >= deadline
+
+
 def _deliver_locked(
-    store: FileStore, channels: Sequence[Channel], clock: Clock, budget: int, pending_dir: Path
+    store: FileStore,
+    channels: Sequence[Channel],
+    clock: Clock,
+    budget: int,
+    pending_dir: Path,
+    out_of_time: Callable[[], bool],
 ) -> list[str]:
     paths = sorted(pending_dir.glob("*.json"))[:budget]
     loaded = [(path, Alert.from_json(path.read_text(encoding="utf-8"))) for path in paths]
@@ -128,7 +160,11 @@ def _deliver_locked(
     touched: set[str] = set()
     dead: set[str] = set()
     for channel in channels:
+        if out_of_time():
+            break
         for path, alert in loaded:
+            if out_of_time():
+                break
             if alert.alert_id in dead:
                 continue
             state = alert.channels.get(channel.name)

@@ -6,6 +6,7 @@ fixed order below. Any exception skips the remaining writes and still releases t
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import TracebackType
@@ -25,6 +26,15 @@ from stockmanager.store.reconcile import (
     reconcile_portfolio,
     repair_log_suffix,
 )
+
+
+def _dedupe_key(alert_text: str) -> str | None:
+    """The ``dedupe_key`` of a serialised alert, or ``None`` if it has none or is not an alert document."""
+    try:
+        key = json.loads(alert_text).get("dedupe_key")
+    except (ValueError, AttributeError):
+        return None
+    return key if isinstance(key, str) else None
 
 
 class GateError(Exception):
@@ -134,7 +144,28 @@ class Transaction:
             except ReconcileError as e:  # pragma: no cover - compare_log already proved prefix-ness
                 raise ReconcileHalt([str(e)]) from e
             self.repaired_log_ids = comparison.missing_suffix
+            self._note_log_repair(self.repaired_log_ids)
         return rebuilt
+
+    def _note_log_repair(self, trade_ids: list[str]) -> None:
+        """Record the ``trades.log`` auto-repair in ``run-notes/`` (TS NN-22).
+
+        Written at once rather than at commit: the repair has already changed ``trades.log``, and the job may still
+        raise before it commits, which must not leave an unexplained append behind.
+        """
+        now = self._store.clock()
+        slug = "".join(c if c.isalnum() else "-" for c in self.job)
+        body = (
+            "---\n"
+            f"job: {self.job}\n"
+            f"started: {now.isoformat()}\n"
+            f"ended: {now.isoformat()}\n"
+            "outcome: log_repaired\n"
+            "---\n\n"
+            f"Repaired `trades.log`: appended the {len(trade_ids)} line(s) missing behind `portfolio.json` "
+            f"({', '.join(trade_ids)}). The books were ahead of the log after an interrupted run; no trade was replayed.\n"
+        )
+        self._store.save_extras(run_notes={f"{now.strftime('%Y%m%dT%H%M%S')}-logrepair-{slug}.md": body})
 
     # -- staging (nothing touches disk) --------------------------------------------------------------------------
 
@@ -177,8 +208,22 @@ class Transaction:
         self._dashboard.update(bundle)
 
     def stage_alerts(self, alerts: Mapping[str, str]) -> None:
-        """Stage alert-outbox files (name -> text) for ``alerts/pending/``."""
-        self._alerts.update(alerts)
+        """Stage alert-outbox files (name -> text) for ``alerts/pending/``.
+
+        An alert whose ``dedupe_key`` matches one already pending on disk, or one staged earlier in this
+        transaction, is dropped (AS §9.2). Files that carry no ``dedupe_key`` are always staged.
+        """
+        from stockmanager.notify.outbox import pending_dedupe_keys  # local import: outbox imports the store
+
+        seen = pending_dedupe_keys(self._store.root)
+        seen.update(k for k in map(_dedupe_key, self._alerts.values()) if k is not None)
+        for name, text in alerts.items():
+            key = _dedupe_key(text)
+            if key is not None:
+                if key in seen:
+                    continue
+                seen.add(key)
+            self._alerts[name] = text
 
     # -- commit --------------------------------------------------------------------------------------------------
 

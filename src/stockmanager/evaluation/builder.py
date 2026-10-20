@@ -37,6 +37,7 @@ from stockmanager.domain.ids import proposal_id, trade_id
 from stockmanager.domain.money import Q4, q4
 from stockmanager.domain.ports import SessionCalendar, SymbolVerifier
 from stockmanager.domain.proposal_state import GENESIS_HASH, chain_hash
+from stockmanager.domain.timeutil import add_elapsed
 from stockmanager.evaluation.reasoner_io import ReasonerOutput, TradeIdea
 from stockmanager.news.config import TICKER_RE
 from stockmanager.store.lock import Clock
@@ -107,6 +108,21 @@ class ProposalBuilder:
     def __init__(self, calendar: SessionCalendar, verifier: SymbolVerifier) -> None:
         self._calendar = calendar
         self._verifier = verifier
+
+    def unheld_buy_tickers(self, intent: ReasonerOutput, snapshot: PortfolioDoc) -> list[str]:
+        """Tickers the intent buys that the book does not hold and that may be priced (AS §8.2 step 1).
+
+        Only a well-formed, verified US equity or ETF qualifies, so nothing the model made up is ever sent to a price
+        provider. ``build`` applies the same test again when it validates the idea.
+        """
+        held = {p.ticker for p in snapshot.positions}
+        names = {
+            leg.ticker
+            for idea in intent.ideas
+            for leg in idea.legs
+            if leg.action == "BUY" and leg.ticker not in held
+        }
+        return sorted(t for t in names if TICKER_RE.fullmatch(t) and self._verifier.is_valid_us_equity_or_etf(t))
 
     def build(
         self,
@@ -323,7 +339,9 @@ class ProposalBuilder:
         prefix = f"P-{created_at.date().isoformat()}-"
         used = [int(i[len(prefix) :]) for i in existing_ids if i.startswith(prefix) and i[len(prefix) :].isdigit()]
         seq = max(used, default=0)
-        execute_at = self._calendar.next_session_open_at_or_after(created_at + timedelta(hours=cfg.veto_window_hours))
+        execute_at = self._calendar.next_session_open_at_or_after(
+            add_elapsed(created_at, timedelta(hours=cfg.veto_window_hours))
+        )
         execute_at = execute_at.astimezone(PT)
         expires_at = execute_at + timedelta(minutes=cfg.proposal_grace_minutes)
         caps = CapsSnapshot(

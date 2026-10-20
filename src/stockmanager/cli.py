@@ -28,7 +28,12 @@ def _default_workspace() -> Path:
 
 def _command_context(ctx: AppContext) -> CommandContext:
     return CommandContext(
-        store=ctx.store, cfg=ctx.cfg, clock=ctx.clock, calendar=ctx.calendar, price_provider=ctx.price_primary
+        store=ctx.store,
+        cfg=ctx.cfg,
+        clock=ctx.clock,
+        calendar=ctx.calendar,
+        price_provider=ctx.price_primary,
+        price_fallback=ctx.price_fallback,
     )
 
 
@@ -60,13 +65,42 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_tick(args: argparse.Namespace) -> int:
-    """``stockmanager tick``: the cron hook (AS §1.5). Fast; exits immediately if another tick holds the lock."""
-    from stockmanager.scheduler.tick import tick as run_tick
+    """``stockmanager tick``: the cron hook (AS §1.5). Fast; exits immediately if another tick holds the lock.
 
-    ctx = create_app(args.workspace, args.config)
-    result = run_tick(ctx.clock, ctx.store, ctx.cfg, execution=ctx.execution, evaluation=ctx.evaluation, channels=ctx.notify_channels)
+    The single-flight lock is taken *before* ``create_app`` so an overlapping tick costs one ``flock`` call, not a
+    full composition-root build (config parse, provider and LLM client construction).
+    """
+    from stockmanager.scheduler.tick import run_locked, tick_lock
+
+    workspace: Path = args.workspace
+    if not workspace.exists():
+        raise WorkspaceMissing(f"workspace not found: {workspace}; run `stockmanager init` first")
+    with tick_lock(workspace) as acquired:
+        if not acquired:
+            print("tick: skipped (another tick is running)")
+            return 0
+        ctx = create_app(workspace, args.config)
+        result = run_locked(
+            ctx.clock,
+            ctx.store,
+            ctx.cfg,
+            execution=ctx.execution,
+            evaluation=ctx.evaluation,
+            reconfirm=ctx.reconfirm,
+            channels=ctx.notify_channels,
+        )
     print(f"tick: {'ok' if result == 0 else 'error'}")
     return result
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """``stockmanager doctor``: verify a cron entry or launchd agent is installed to fire ``tick`` (AS §10.1)."""
+    from stockmanager.ops.doctor import run_doctor
+
+    python = args.python if args.python is not None else Path(sys.prefix) / "bin" / "python"
+    healthy, lines = run_doctor(python, args.workspace.expanduser().absolute())
+    print("\n".join(lines))
+    return 0 if healthy else 1
 
 
 def cmd_news(args: argparse.Namespace) -> int:
@@ -251,6 +285,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_help = sub.add_parser("help", help="print the full command vocabulary")
     _add_workspace_arg(p_help)
     p_help.set_defaults(func=lambda args: cmd_help(parser, args))
+
+    p_doctor = sub.add_parser("doctor", help="check that cron or launchd is set up to run `tick`")
+    _add_workspace_arg(p_doctor)
+    p_doctor.add_argument("--python", type=Path, default=None, help="expected interpreter (default: this venv's python)")
+    p_doctor.set_defaults(func=cmd_doctor)
 
     p_bot = sub.add_parser("bot", help="run the Discord bot daemon")
     _add_workspace_arg(p_bot)

@@ -56,3 +56,5 @@ mypy_path = "src"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# tests/sim and tests/integration keep the TS-spec file names (fault_injection.py, ...), so collect them by directory.
+python_files = ["test_*.py", "tests/sim/*.py", "tests/integration/*.py"]

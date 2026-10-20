@@ -4,9 +4,11 @@ There are no per-proposal OS jobs; ``list_due_jobs``/``list_all_jobs`` derive th
 sleep/wake and retry-within-expiry are properties of this code, not of cron. Execution jobs sort before evaluation
 (AS §1.5's tick algorithm).
 
-Deviation from the architecture spec: this build's ``ProposalDoc`` has no ``delivery``/``reconfirm_check`` fields
-(``RECONFIRM`` creates a fully-formed new proposal synchronously, AS §8.7), so no ``reconfirm:<id>`` job is derived
-here -- there is nothing left for a tick to validate asynchronously.
+``RECONFIRM`` creates its replacement proposal at once but validates it later (AS §8.7): a ``PROPOSED`` proposal
+with ``reconfirm_check == "pending"`` has a ``reconfirm:<id>`` job, due on the next tick.
+
+Deviation from the architecture spec: this build's ``ProposalDoc`` has no ``delivery`` field (AS §8.3), so there is no
+delivery gate other than ``reconfirm_check``.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ class ScheduleSlot:
 
 @dataclass(frozen=True)
 class DueJob:
-    """One derived job (AS §1.5). ``proposal_id`` is set for ``execution``."""
+    """One derived job (AS §1.5). ``proposal_id`` is set for ``execution`` and ``reconfirm``."""
 
     kind: str
     slot: ScheduleSlot | None
@@ -61,6 +63,14 @@ def _execution_jobs(now: datetime, proposals: list[ProposalDoc], exec_delay_minu
     return jobs
 
 
+def _by_id(p: ProposalDoc) -> str:
+    return p.proposal_id
+
+
+def _is_pending_reconfirm(p: ProposalDoc) -> bool:
+    return p.state == "PROPOSED" and p.reconfirm_check == "pending"
+
+
 def list_due_jobs(
     now: datetime,
     cfg: Config,
@@ -75,6 +85,7 @@ def list_due_jobs(
     jobs: list[DueJob] = []
     if status == "LIVE":
         jobs.extend(_execution_jobs(now, proposals, exec_delay_minutes))
+        jobs.extend(DueJob("reconfirm", None, p.proposal_id) for p in sorted(proposals, key=_by_id) if _is_pending_reconfirm(p))
     if status in ("LIVE", "PAUSED"):
         slot = _eval_slot(now, cfg, scheduler_state, late_threshold_minutes)
         if now >= slot.slot_time and slot.slot_time.date() not in scheduler_state.completed_slots:
@@ -99,6 +110,9 @@ def list_all_jobs(
         for p in sorted(proposals, key=lambda d: d.proposal_id):
             if p.state == "APPROVED":
                 jobs.append(DueJob("execution", None, p.proposal_id))
+        for p in sorted(proposals, key=_by_id):
+            if _is_pending_reconfirm(p):
+                jobs.append(DueJob("reconfirm", None, p.proposal_id))
     if status in ("LIVE", "PAUSED"):
         jobs.append(DueJob("evaluation", _eval_slot(now, cfg, scheduler_state, late_threshold_minutes), None))
     if status == "APPROVED":

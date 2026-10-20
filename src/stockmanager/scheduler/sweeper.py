@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 from stockmanager.domain.docs import ProposalDoc, TransitionRecord
 from stockmanager.domain.proposal_state import ProposalState, can_transition, chain_hash, is_terminal
+from stockmanager.domain.timeutil import add_elapsed
 from stockmanager.notify.outbox import prepare
 from stockmanager.notify.templates import proposal_expired
 from stockmanager.store import FileStore
@@ -39,19 +40,10 @@ def _load_all_proposals(store: FileStore) -> list[ProposalDoc]:
     return out
 
 
-def sweep(now: datetime, store: FileStore, clock: Clock) -> list[TransitionRecord]:
-    """Run every sweeper rule once (AS §1.5 steps 1-5), under one transaction if anything changes. Idempotent.
-
-    1. ``PAUSED``/``CLOSED`` -> every non-terminal proposal -> ``CANCELLED_PAUSED``/``CANCELLED_CLOSED`` (TS D19).
-    2. ``PROPOSED`` -> ``VETO_WINDOW`` (deadline = now + veto_window_hours; see module docstring).
-    3. ``VETO_WINDOW``, ``auto`` mode, deadline passed -> ``APPROVED``.
-    4. Non-terminal, past ``expires_at`` -> ``EXPIRED`` (alert).
-    5. ``auto`` proposals whose window would close after ``execute_at`` -> ``EXPIRED`` immediately (TS D10).
-
-    Returns the transition records written this call.
-    """
-    if not store.portfolio_exists():
-        return []
+def _plan(
+    now: datetime, status: str, proposals: list[ProposalDoc]
+) -> tuple[dict[str, ProposalDoc], dict[str, str], list[TransitionRecord]]:
+    """Pure sweeper rules over ``proposals``: the staged proposals, staged alert files and transitions to write."""
     staged: dict[str, ProposalDoc] = {}
     alerts: dict[str, str] = {}
     written: list[TransitionRecord] = []
@@ -62,37 +54,63 @@ def sweep(now: datetime, store: FileStore, clock: Clock) -> list[TransitionRecor
         written.append(new_doc.transitions[-1])
         return new_doc
 
+    for original in proposals:
+        cur = original
+        if status == "PAUSED" and can_transition(cur.state, "CANCELLED_PAUSED"):
+            cur = apply(cur, "CANCELLED_PAUSED", "system:pause", "system paused (sweeper convergence)")
+        elif status == "CLOSED" and can_transition(cur.state, "CANCELLED_CLOSED"):
+            cur = apply(cur, "CANCELLED_CLOSED", "system:close", "system closed (sweeper convergence)")
+
+        if cur.reconfirm_check == "pending" and not is_terminal(cur.state):
+            continue  # a RECONFIRM replacement is not delivered and runs no clock until its job validates it (AS §8.7)
+
+        if cur.state == "PROPOSED" and can_transition(cur.state, "VETO_WINDOW"):
+            deadline = add_elapsed(now, timedelta(hours=cur.veto_window_hours))
+            opened = cur.model_copy(update={"veto_deadline": deadline})
+            if cur.approval_mode == "auto" and deadline > cur.execute_at:
+                cur = apply(opened, "EXPIRED", "system:sweeper", "late_delivery")
+            else:
+                cur = apply(opened, "VETO_WINDOW", "system:sweeper", "delivered")
+
+        if (
+            cur.state == "VETO_WINDOW"
+            and cur.approval_mode == "auto"
+            and cur.veto_deadline is not None
+            and cur.veto_deadline <= now
+            and can_transition(cur.state, "APPROVED")
+        ):
+            cur = apply(cur, "APPROVED", "system:sweeper", "auto-approved at deadline")
+
+        if not is_terminal(cur.state) and now > cur.expires_at and can_transition(cur.state, "EXPIRED"):
+            cur = apply(cur, "EXPIRED", "system:sweeper", "past expires_at")
+            alert = prepare(proposal_expired(cur.proposal_id, "missed execution window"), now)
+            alerts[f"{alert.alert_id}.json"] = alert.to_json()
+    return staged, alerts, written
+
+
+def sweep(now: datetime, store: FileStore, clock: Clock) -> list[TransitionRecord]:
+    """Run every sweeper rule once (AS §1.5 steps 1-5), under one transaction only if anything changes. Idempotent.
+
+    1. ``PAUSED``/``CLOSED`` -> every non-terminal proposal -> ``CANCELLED_PAUSED``/``CANCELLED_CLOSED`` (TS D19).
+    2. ``PROPOSED`` -> ``VETO_WINDOW`` (deadline = now + veto_window_hours; see module docstring).
+    3. ``VETO_WINDOW``, ``auto`` mode, deadline passed -> ``APPROVED``.
+    4. Non-terminal, past ``expires_at`` -> ``EXPIRED`` (alert).
+    5. ``auto`` proposals whose window would close after ``execute_at`` -> ``EXPIRED`` immediately (TS D10).
+
+    The rules are first evaluated lock-free (every file is written atomically, so a read is never torn); the
+    common "nothing to do" tick returns without touching ``portfolio.lock``. If there is work, it is evaluated
+    again from fresh state under the lock, which is the only evaluation whose result is written (AS §1.5).
+
+    Returns the transition records written this call.
+    """
+    if not store.portfolio_exists():
+        return []
+    staged, _, _ = _plan(now, store.load_portfolio().status, _load_all_proposals(store))
+    if not staged:
+        return []
     try:
         with store.transaction("sweep") as txn:
-            status = txn.state.status
-            for original in _load_all_proposals(store):
-                cur = original
-                if status == "PAUSED" and can_transition(cur.state, "CANCELLED_PAUSED"):
-                    cur = apply(cur, "CANCELLED_PAUSED", "system:pause", "system paused (sweeper convergence)")
-                elif status == "CLOSED" and can_transition(cur.state, "CANCELLED_CLOSED"):
-                    cur = apply(cur, "CANCELLED_CLOSED", "system:close", "system closed (sweeper convergence)")
-
-                if cur.state == "PROPOSED" and can_transition(cur.state, "VETO_WINDOW"):
-                    deadline = now + timedelta(hours=cur.veto_window_hours)
-                    opened = cur.model_copy(update={"veto_deadline": deadline})
-                    if cur.approval_mode == "auto" and deadline > cur.execute_at:
-                        cur = apply(opened, "EXPIRED", "system:sweeper", "late_delivery")
-                    else:
-                        cur = apply(opened, "VETO_WINDOW", "system:sweeper", "delivered")
-
-                if (
-                    cur.state == "VETO_WINDOW"
-                    and cur.approval_mode == "auto"
-                    and cur.veto_deadline is not None
-                    and cur.veto_deadline <= now
-                    and can_transition(cur.state, "APPROVED")
-                ):
-                    cur = apply(cur, "APPROVED", "system:sweeper", "auto-approved at deadline")
-
-                if not is_terminal(cur.state) and now > cur.expires_at and can_transition(cur.state, "EXPIRED"):
-                    cur = apply(cur, "EXPIRED", "system:sweeper", "past expires_at")
-                    alert = prepare(proposal_expired(cur.proposal_id, "missed execution window"), now)
-                    alerts[f"{alert.alert_id}.json"] = alert.to_json()
+            staged, alerts, written = _plan(now, txn.state.status, _load_all_proposals(store))
             if staged:
                 txn.stage_proposals(dict(staged))
             if alerts:

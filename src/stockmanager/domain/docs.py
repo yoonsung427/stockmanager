@@ -12,7 +12,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from stockmanager.domain.money import q4
-from stockmanager.domain.proposal_state import ProposalState
+from stockmanager.domain.proposal_state import ProposalState, chain_hash, require_transition
 from stockmanager.pricing.errors import MixedSourceError
 
 PriceSource = Literal["yahoo", "finnhub"]
@@ -254,11 +254,27 @@ class ProposalDoc(_Doc):
     legs: list[ProposalLeg] = Field(min_length=1)
     rationale: str
     hold_alternative: str
+    reconfirms: str | None = None  # set at creation by RECONFIRM: the EXPIRED proposal this one replaces (AS §8.7)
+    reconfirmed_as: str | None = None  # set once on the EXPIRED original when RECONFIRM succeeds; makes it idempotent
+    reconfirm_check: Literal["pending", "passed", "failed"] | None = None  # None unless created by RECONFIRM
     transitions: list[TransitionRecord] = Field(min_length=1)
 
     def to_canonical_json(self) -> str:
         """Serialize with indent=2, ensure_ascii=False and a trailing newline; transitions use ``from``."""
         return json.dumps(self.model_dump(mode="json", by_alias=True), indent=2, ensure_ascii=False) + "\n"
+
+    def transition(self, to: ProposalState, actor: str, cause: str, at: datetime) -> ProposalDoc:
+        """This proposal after one legal transition (AS §8.4), with the new hash-chained ``transitions[]`` entry.
+
+        Raises ``IllegalTransition`` if ``self.state -> to`` is not in the table.
+        """
+        require_transition(self.state, to)
+        prev = self.transitions[-1]
+        rec = TransitionRecord(
+            seq=prev.seq + 1, from_state=self.state, to=to, at=at, actor=actor, cause=cause, prev_hash=prev.hash, hash=""
+        )
+        rec = rec.model_copy(update={"hash": chain_hash(prev.hash, rec.model_dump(mode="json", by_alias=True))})
+        return self.model_copy(update={"state": to, "transitions": [*self.transitions, rec]})
 
 
 NotProposedReason = Literal[

@@ -11,6 +11,7 @@ import json
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal
 
 from stockmanager.store import FileStore
@@ -132,8 +133,44 @@ def prepare(alert: Alert, now: datetime) -> Alert:
     return alert
 
 
-def enqueue(alert: Alert, store: FileStore) -> None:
-    """Write ``alert`` to ``alerts/pending/`` atomically. Stamps ``alert_id``/``occurred_at``/``channels`` if unset."""
+def _dedupe_keys(root: Path, boxes: tuple[str, ...]) -> set[str]:
+    keys: set[str] = set()
+    for box in boxes:
+        directory = root / "alerts" / box
+        if not directory.exists():
+            continue
+        for path in directory.glob("*.json"):
+            try:
+                key = json.loads(path.read_text(encoding="utf-8")).get("dedupe_key")
+            except (OSError, ValueError, AttributeError):
+                continue
+            if isinstance(key, str):
+                keys.add(key)
+    return keys
+
+
+def pending_dedupe_keys(root: Path) -> set[str]:
+    """Every ``dedupe_key`` among the undelivered alerts in ``<root>/alerts/pending`` (AS §9.2).
+
+    Unreadable files and alerts without a key are ignored: dedup is best-effort and must never block an alert.
+    """
+    return _dedupe_keys(root, ("pending",))
+
+
+def raised_dedupe_keys(root: Path) -> set[str]:
+    """Every ``dedupe_key`` ever queued: pending, sent or dead-lettered. Answers "was the owner told about X?"."""
+    return _dedupe_keys(root, ("pending", "sent", "dead"))
+
+
+def enqueue(alert: Alert, store: FileStore) -> bool:
+    """Write ``alert`` to ``alerts/pending/`` atomically. Stamps ``alert_id``/``occurred_at``/``channels`` if unset.
+
+    Skips the write and returns ``False`` if an undelivered alert with the same ``dedupe_key`` is already pending;
+    once that alert is sent or dead-lettered the key is free again. Returns ``True`` when the alert was written.
+    """
     prepare(alert, store.clock())
+    if alert.dedupe_key is not None and alert.dedupe_key in pending_dedupe_keys(store.root):
+        return False
     path = store.root / "alerts" / "pending" / f"{alert.alert_id}.json"
     atomic_write_text(path, alert.to_json())
+    return True

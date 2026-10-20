@@ -1,0 +1,17 @@
+# stockmanager tick heartbeat -- install with `crontab -e`, or register the same schedule + command as a
+# Hermes cron job (`hermes cron`). Nothing in this repo creates the entry; you do, once. Verify with:
+#   /Users/yoonsung/stockmanager/.venv/bin/python -m stockmanager doctor --workspace /path/to/workspace
+#
+# Why every 5 minutes, on 5-minute boundaries (*/5):
+#   * The tick derives what is due from the books (AS §1.5); it never needs to fire at an exact second.
+#   * An execution job becomes due at execute_at + exec_delay (exec_delay = 5 min, so the open print exists).
+#     Aligning to :00/:05/:10... means the first tick that can see the open print lands on a boundary.
+#   * Ticks are single-flight (state/tick.lock): an evaluation that runs past 5 minutes just makes the
+#     overlapping ticks exit 0 immediately, so a slower cadence costs nothing.
+#   * The bot raises "scheduler not running" when state/scheduler.json last_tick is > 10 min old (AS §10.1).
+#     A 5-minute cadence tolerates exactly one missed tick before that alert; do not go slower.
+#   * Note: AS §2.3 specifies a 1-minute heartbeat; 5 minutes is a deliberate relaxation, not a spec default.
+#
+# Use absolute paths: cron starts with an empty environment. Create the log directory first.
+# Replace /path/to/workspace with your workspace directory (the one holding portfolio.json).
+*/5 * * * * /Users/yoonsung/stockmanager/.venv/bin/python -m stockmanager tick --workspace /path/to/workspace >> /path/to/workspace/logs/tick.log 2>&1
