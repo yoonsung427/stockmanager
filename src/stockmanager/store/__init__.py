@@ -120,6 +120,19 @@ class FileStore:
         """Atomically replace ``proposals/<proposal_id>.json``."""
         fsutil.atomic_write_text(self.proposal_path(proposal_id), canonical_json(doc))
 
+    def save_extracted_facts(
+        self, cycle_id: str, doc: BaseModel | Mapping[str, Any], rejected: Sequence[Mapping[str, Any]]
+    ) -> None:
+        """Write ``extracted-facts/<cycle_id>.rejected.jsonl`` then ``<cycle_id>.json`` (AS §3.8), both replaced atomically.
+
+        The sidecar goes first so the facts file, which the Reasoner input is built from, only ever appears next to a
+        complete audit file. Rejection rows carry reason codes and ids, never news text.
+        """
+        fsutil.atomic_write_text(
+            self._child("extracted-facts", f"{cycle_id}.rejected.jsonl"), "".join(_jsonl(r) + "\n" for r in rejected)
+        )
+        fsutil.atomic_write_text(self._child("extracted-facts", f"{cycle_id}.json"), canonical_json(doc))
+
     def save_nav_history(self, rows: list[dict[str, Any]]) -> None:
         """Append one JSON line per row to ``nav_history.jsonl``, fsync per line."""
         fsutil.append_lines(self.nav_history_path, [_jsonl(r) for r in rows])

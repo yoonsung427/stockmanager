@@ -1,0 +1,8 @@
+schema_version: 1
+prompt: extractor
+version: v1
+target_model: claude-haiku-5-5
+files:
+  system.md: "9387c2d37e5ace1f91be4688c6d3741cd82f6df2f9098b6476fd8f6ef76ef9cf"
+  user.md.j2: "ee6864e7dfbcdaebeb41bbf839b40506ccfcf9cfeb1fe82b94fef95d5a9bfbbc"
+  output_schema.json: "6e496e7bdafae70ae4f44d4e5f99fac195dcf7b37ec999577b8bbb47fb2bd064"

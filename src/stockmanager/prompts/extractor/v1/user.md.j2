@@ -1,0 +1,12 @@
+Cycle date: {{ cycle_date }}
+Benchmark ticker: {{ benchmark }}
+Allowed tickers (use only these, exactly as written): {{ allowed_tickers | join(", ") }}
+Search focus: {{ focus_ticker if focus_ticker else "market-wide" }}
+Publication date supplied by the news fetcher: {{ published if published else "not supplied" }}
+
+<item>
+<title>{{ title | xe }}</title>
+<snippet>{{ snippet | xe }}</snippet>
+</item>
+
+Extract the facts this item reports about the allowed tickers, following the rules you were given. Return the JSON object only.

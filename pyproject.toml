@@ -14,6 +14,9 @@ dependencies = [
     "aiohttp",
     "discord.py",
     "psutil",
+    "anthropic",
+    "jinja2",
+    "defusedxml",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +27,7 @@ dev = [
     "mypy",
     "types-PyYAML",
     "types-psutil",
+    "types-defusedxml",
     "uvicorn",
 ]
 
@@ -35,6 +39,9 @@ Repository = "https://github.com/yoonsung/stockmanager"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+stockmanager = ["prompts/**/*"]
 
 [tool.ruff]
 line-length = 120

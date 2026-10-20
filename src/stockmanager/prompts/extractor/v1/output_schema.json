@@ -1,0 +1,47 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "candidates"
+  ],
+  "properties": {
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ticker",
+          "event",
+          "description",
+          "date"
+        ],
+        "properties": {
+          "ticker": {
+            "type": "string"
+          },
+          "event": {
+            "type": "string",
+            "enum": [
+              "earnings",
+              "guidance",
+              "rating_change",
+              "regulatory",
+              "product",
+              "m&a",
+              "macro",
+              "other"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string",
+            "format": "date"
+          }
+        }
+      }
+    }
+  }
+}

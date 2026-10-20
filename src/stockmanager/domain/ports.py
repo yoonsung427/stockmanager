@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from stockmanager.domain.docs import PriceQuote
+
+if TYPE_CHECKING:
+    from stockmanager.news.plan import NewsQuery
+    from stockmanager.news.raw import RawItem
 
 
 class PriceProvider(Protocol):
@@ -15,4 +19,14 @@ class PriceProvider(Protocol):
 
     def get_price(self, ticker: str, session_date: date, kind: Literal["open", "close"]) -> PriceQuote:
         """Return the ``kind`` price of ``ticker`` for ``session_date``."""
+        ...
+
+
+class NewsFetcher(Protocol):
+    """A synchronous news source (AS §7.2). Returns headlines and snippets only; article pages are never fetched."""
+
+    name: str  # "searxng" | "finnhub" | "yahoo_rss"
+
+    def fetch(self, query: NewsQuery) -> list[RawItem]:
+        """Return the items for ``query``. An empty list is success. Raises ``NewsUnavailable`` on any failure."""
         ...

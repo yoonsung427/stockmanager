@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -15,6 +16,7 @@ from stockmanager.pricing.errors import MixedSourceError
 
 PriceSource = Literal["yahoo", "finnhub"]
 Status = Literal["STAGED", "APPROVED", "LIVE", "PAUSED", "CLOSED"]
+NewsEvent = Literal["earnings", "guidance", "rating_change", "regulatory", "product", "m&a", "macro", "other"]
 
 
 class _Doc(BaseModel):
@@ -136,3 +138,27 @@ class PortfolioDoc(_Doc):
     def to_canonical_json(self) -> str:
         """Serialize with indent=2, ensure_ascii=False and a trailing newline."""
         return json.dumps(self.model_dump(mode="json"), indent=2, ensure_ascii=False) + "\n"
+
+
+class Fact(_Doc):
+    """An extracted, validated news fact (AS §3.8). There is deliberately no price field (SS §6, TS INJ-06)."""
+
+    fact_id: str
+    ticker: str
+    event: NewsEvent
+    description: str
+    date: dt.date
+    source_url: str
+    source_domain: str
+    display_title: str  # dashboard only; excluded from for_reasoner()
+
+    def for_reasoner(self) -> dict[str, Any]:
+        """Projection for ``ReasonerInput`` (AS §7.3): excludes ``display_title`` and ``source_url``."""
+        return {
+            "fact_id": self.fact_id,
+            "ticker": self.ticker,
+            "event": self.event,
+            "description": self.description,
+            "date": self.date,
+            "source_domain": self.source_domain,
+        }
