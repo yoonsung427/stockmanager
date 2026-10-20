@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml",
     "aiohttp",
+    "httpx",
     "discord.py",
     "psutil",
     "anthropic",
