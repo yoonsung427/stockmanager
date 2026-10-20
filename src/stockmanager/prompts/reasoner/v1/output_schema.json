@@ -1,0 +1,100 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "holdings", "ideas", "hold_alternative"],
+  "properties": {
+    "summary": { "type": "string" },
+    "hold_alternative": { "type": "string" },
+    "holdings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ticker", "stance", "thesis_status", "dims", "evidence_fact_ids"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "stance": { "type": "string", "enum": ["hold", "add", "trim", "exit"] },
+          "thesis_status": { "type": "string", "enum": ["intact", "strengthened", "weakened", "broken", "unclear"] },
+          "dims": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["thesis", "momentum", "catalysts", "risk", "opportunity_cost"],
+            "properties": {
+              "thesis":           { "type": "string" },
+              "momentum":         { "type": "string" },
+              "catalysts":        { "type": "string" },
+              "risk":             { "type": "string" },
+              "opportunity_cost": { "type": "string" }
+            }
+          },
+          "evidence_fact_ids": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "ideas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["priority", "rationale", "why_beats_hold", "legs", "risk_assessment", "evidence_fact_ids"],
+        "properties": {
+          "priority":       { "type": "integer" },
+          "rationale":      { "type": "string" },
+          "why_beats_hold": { "type": "string" },
+          "legs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["leg", "action", "ticker", "size_intent", "thesis"],
+              "properties": {
+                "leg":    { "type": "string" },
+                "action": { "type": "string", "enum": ["BUY", "SELL"] },
+                "ticker": { "type": "string" },
+                "thesis": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                "size_intent": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["kind", "fraction", "leg", "value"],
+                  "properties": {
+                    "kind":     { "type": "string", "enum": ["fraction_of_position", "proceeds_of", "target_value"] },
+                    "fraction": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                    "leg":      { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                    "value":    { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+                  }
+                }
+              }
+            }
+          },
+          "risk_assessment": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sector", "largest_position_after_pct", "sector_weight_after_pct", "main_risks", "invalidation", "confidence", "limits_check"],
+            "properties": {
+              "sector":                     { "type": "string" },
+              "largest_position_after_pct": { "type": "string" },
+              "sector_weight_after_pct":    { "type": "string" },
+              "main_risks":                 { "type": "array", "items": { "type": "string" } },
+              "invalidation":               { "type": "string" },
+              "confidence":                 { "type": "string", "enum": ["low", "medium", "high"] },
+              "limits_check": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["position_cap", "new_position_cap", "sector_cap", "trade_cap", "long_only", "cash"],
+                "properties": {
+                  "position_cap":     { "type": "boolean" },
+                  "new_position_cap": { "type": "boolean" },
+                  "sector_cap":       { "type": "boolean" },
+                  "trade_cap":        { "type": "boolean" },
+                  "long_only":        { "type": "boolean" },
+                  "cash":             { "type": "boolean" }
+                }
+              }
+            }
+          },
+          "evidence_fact_ids": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

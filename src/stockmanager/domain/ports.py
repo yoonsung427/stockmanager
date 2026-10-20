@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from stockmanager.domain.docs import PriceQuote
@@ -29,4 +29,20 @@ class NewsFetcher(Protocol):
 
     def fetch(self, query: NewsQuery) -> list[RawItem]:
         """Return the items for ``query``. An empty list is success. Raises ``NewsUnavailable`` on any failure."""
+        ...
+
+
+class SessionCalendar(Protocol):
+    """The NYSE calendar (AS §6.4)."""
+
+    def next_session_open_at_or_after(self, instant: datetime) -> datetime:
+        """Return the 06:30 PT open of the first session whose open is at or after ``instant``."""
+        ...
+
+
+class SymbolVerifier(Protocol):
+    """Decides whether a ticker not currently held may be bought (AS §8.2 step 1)."""
+
+    def is_valid_us_equity_or_etf(self, ticker: str) -> bool:
+        """True if the instrument is an EQUITY or ETF, quoted in USD on a US exchange."""
         ...

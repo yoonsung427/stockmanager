@@ -1,0 +1,32 @@
+Evaluation cycle {{ cycle_id }}. All prices below are official closes for {{ valuation_date }} from a single source ({{ price_source }}).
+
+<config>
+{{ config | tojson(indent=2) }}
+</config>
+
+<portfolio>
+{{ portfolio | tojson(indent=2) }}
+</portfolio>
+
+<benchmark_and_risk>
+{{ benchmark | tojson(indent=2) }}
+{{ metrics | tojson(indent=2) }}
+</benchmark_and_risk>
+
+<sectors>
+{{ sector_weights | tojson(indent=2) }}
+</sectors>
+
+<sector_rotation>
+{{ sector_etfs | tojson(indent=2) }}
+</sector_rotation>
+
+<facts>
+{{ facts | tojson(indent=2) }}
+</facts>
+
+<recent_vetoes>
+{{ veto_history | tojson(indent=2) }}
+</recent_vetoes>
+
+Assess every holding, then suggest zero or more trade ideas within the limits you were given. Return the JSON object only.

@@ -13,3 +13,8 @@ def opening_proposal_id(session_date: date) -> str:
 def trade_id(proposal_id: str, leg: str) -> str:
     """Trade ID of the form ``<proposal_id>-<leg>``, e.g. ``P-OPEN-2026-10-12-buy1``."""
     return f"{proposal_id}-{leg}"
+
+
+def proposal_id(created: date, seq: int) -> str:
+    """Proposal ID ``P-YYYY-MM-DD-NN`` (date = creation date in PT, ``NN`` zero-padded sequence), AS §3.3."""
+    return f"P-{created.isoformat()}-{seq:02d}"
