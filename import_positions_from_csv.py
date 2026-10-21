@@ -2,6 +2,7 @@
 """Import positions from a CSV file with columns: Symbol, Name, Quantity.
 
 Creates synthetic BUY trades that derive Position objects via apply_fill.
+Skips symbols already present in the portfolio.
 Usage:
     python import_positions_from_csv.py /path/to/portfolio.csv
 """
@@ -41,6 +42,7 @@ def main() -> None:
 
     ctx = create_app(Path("workspace"))
     portfolio = ctx.store.load_portfolio()
+    existing = {p.ticker for p in portfolio.positions}
 
     # Read CSV
     holdings: list[tuple[str, str, Decimal]] = []
@@ -54,43 +56,56 @@ def main() -> None:
 
     print(f"Found {len(holdings)} positions in CSV")
 
-    # Check for duplicates and merge
+    # Merge duplicates within CSV
     by_symbol: dict[str, tuple[str, Decimal]] = {}
     for symbol, name, quantity in holdings:
         if symbol in by_symbol:
             old_name, old_qty = by_symbol[symbol]
             by_symbol[symbol] = (old_name, old_qty + quantity)
-            print(f"  Merged duplicate: {symbol} ({old_qty} + {quantity} = {old_qty + quantity})")
         else:
             by_symbol[symbol] = (name, quantity)
 
-    symbols = sorted(by_symbol.keys())
-    print(f"After merging: {len(symbols)} unique symbols")
+    # Skip symbols already in portfolio
+    new_symbols = []
+    skipped = []
+    for symbol in sorted(by_symbol.keys()):
+        if symbol in existing:
+            skipped.append(symbol)
+        else:
+            new_symbols.append(symbol)
+
+    if skipped:
+        print(f"Skipping {len(skipped)} already-present symbols: {', '.join(skipped)}")
+
+    if not new_symbols:
+        print("All symbols already in portfolio. Nothing to import.")
+        sys.exit(0)
+
+    print(f"Importing {len(new_symbols)} new symbols: {', '.join(new_symbols)}")
 
     # Fetch prices
     print("Fetching prices...")
     ps = PriceService()
-    groups = [[s] for s in symbols]
+    groups = [[s] for s in new_symbols]
     now = datetime.now(PT)
     try:
         quotes = ps.fill_prices(groups, now.date(), ctx.price_primary, ctx.price_fallback)
     except Exception as e:
-        print(f"Price fetch error: {e}")
+        print(f"Batch fetch error: {e}")
         print("Trying individual fetches...")
         quotes = {}
-        for s in symbols:
+        for s in new_symbols:
             try:
                 quote = ctx.price_primary.get_price(s, now.date(), "open")
                 quotes[s] = quote
             except Exception as e2:
                 print(f"  Failed {s}: {e2}")
-                quotes[s] = None
 
     # Create trades
     print("Creating trades...")
     timestamp = now
     trades: list[Trade] = []
-    for symbol in symbols:
+    for symbol in new_symbols:
         name, quantity = by_symbol[symbol]
         quote = quotes.get(symbol)
         if quote is None:
@@ -110,9 +125,16 @@ def main() -> None:
         )
         trades.append(trade)
 
+    if not trades:
+        print("No trades created (all prices failed).")
+        sys.exit(1)
+
     # Derive positions from trades
     print("Deriving positions from trades...")
-    ledger = LedgerState(cash=portfolio.cash, positions={p.ticker: p for p in portfolio.positions})
+    ledger = LedgerState(
+        cash=portfolio.cash,
+        positions={p.ticker: p for p in portfolio.positions},
+    )
     for trade in trades:
         ledger = apply_fill(ledger, trade)
 
@@ -125,7 +147,7 @@ def main() -> None:
         }
     )
 
-    print(f"Importing {len(trades)} trades ({len(ledger.positions)} positions total)")
+    print(f"Adding {len(trades)} trades ({len(ledger.positions)} positions total)")
     print(f"Cash balance: {new_portfolio.cash}")
 
     confirm = input("Confirm import? [y/N]: ").strip().lower()
@@ -135,11 +157,13 @@ def main() -> None:
 
     ctx.store.save_portfolio(new_portfolio)
     ctx.store.append_trades_log(
-        [f"{trade.trade_id}\t{trade.timestamp.isoformat()}\t{trade.action}\t{trade.ticker}\t{trade.shares}\t{trade.fill_price}\t{trade.cost}\t{trade.price_source}" for trade in trades]
+        [
+            f"{trade.trade_id}\t{trade.timestamp.isoformat()}\t{trade.action}\t{trade.ticker}\t{trade.shares}\t{trade.fill_price}\t{trade.cost}\t{trade.price_source}"
+            for trade in trades
+        ]
     )
 
     print("Import complete.")
-    print("Next: transition portfolio to LIVE with `hermes tick` or `python -m stockmanager.cli tick`")
 
 
 if __name__ == "__main__":
