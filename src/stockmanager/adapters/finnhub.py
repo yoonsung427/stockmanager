@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Literal, Sequence
 from zoneinfo import ZoneInfo
 
 from stockmanager.adapters.http import USER_AGENT, HttpGet, get_with_retries, urllib_get
@@ -72,3 +72,7 @@ class FinnhubPriceProvider:
         if kind == "close" and last_trade > close_at + SETTLE:
             raise PriceError("incomplete_session", ticker, "last trade is after the settle window (extended hours?)")
         return quote
+
+    def prime(self, tickers: Sequence[str], session_date: date, kind: Literal["open", "close"]) -> dict[str, Exception]:
+        """No-op: Finnhub /quote API does not support batch fetching."""
+        return {}

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, Sequence
 
 from stockmanager.domain.docs import PriceQuote
 
@@ -19,6 +19,10 @@ class PriceProvider(Protocol):
 
     def get_price(self, ticker: str, session_date: date, kind: Literal["open", "close"]) -> PriceQuote:
         """Return the ``kind`` price of ``ticker`` for ``session_date``."""
+        ...
+
+    def prime(self, tickers: Sequence[str], session_date: date, kind: Literal["open", "close"]) -> dict[str, Exception]:
+        """Batch-refresh ``tickers`` in the cache. Returns ``{ticker: error}`` for any that could not be fetched."""
         ...
 
 

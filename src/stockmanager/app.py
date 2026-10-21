@@ -22,7 +22,7 @@ from stockmanager.adapters.calendar import SimpleWeekdayCalendar
 from stockmanager.adapters.discord_rest import DiscordRESTChannel
 from stockmanager.adapters.finnhub import FinnhubPriceProvider
 from stockmanager.adapters.symbol_verifier import YahooSymbolVerifier
-from stockmanager.adapters.yahoo import YahooPriceProvider, regular_close
+from stockmanager.adapters.yfinance_provider import YfinancePriceProvider, regular_close
 from stockmanager.commands import CommandContext
 from stockmanager.config.model import Config
 from stockmanager.domain.docs import PortfolioDoc
@@ -99,9 +99,9 @@ def load_secrets(path: Path | None = None) -> None:
             os.environ.setdefault(m.group(1), m.group(2))
 
 
-def _build_price_provider(name: str, clock: Clock) -> PriceProvider:
+def _build_price_provider(name: str, clock: Clock, cache_dir: Path) -> PriceProvider:
     if name == "yahoo":
-        return YahooPriceProvider(clock, session_close=regular_close)
+        return YfinancePriceProvider(clock, session_close=regular_close, cache_dir=cache_dir)
     if name == "finnhub":
         return FinnhubPriceProvider(os.environ.get("FINNHUB_API_KEY", ""), clock, session_close=regular_close)
     raise ConfigInvalid(f"unknown price source: {name!r}")  # pragma: no cover - Config already restricts this
@@ -161,8 +161,8 @@ def create_app(workspace_path: str | Path, config_path: str | Path | None = None
 
     calendar = SimpleWeekdayCalendar()
     symbol_verifier = YahooSymbolVerifier()
-    price_primary = _build_price_provider(cfg.price_source_primary, clock)
-    price_fallback = _build_price_provider(cfg.price_source_fallback, clock)
+    price_primary = _build_price_provider(cfg.price_source_primary, clock, workspace)
+    price_fallback = _build_price_provider(cfg.price_source_fallback, clock, workspace)
 
     execution = ExecutionEngine(
         store, clock, calendar, price_primary, price_fallback, exec_delay_minutes=cfg.ops.exec_delay_minutes

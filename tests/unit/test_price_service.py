@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Literal, Sequence
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -33,6 +33,9 @@ class Fake:
         if ticker in self.fail:
             raise PriceError(self.fail[ticker], ticker)
         return PriceQuote(ticker, session_date, kind, Decimal(self.prices[ticker]), self.name, NOW)
+
+    def prime(self, tickers: Sequence[str], session_date: date, kind: Kind) -> dict[str, Exception]:
+        return {}
 
 
 PRICES = {"AAPL": "100", "MSFT": "200", "SPY": "300"}

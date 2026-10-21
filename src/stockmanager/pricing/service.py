@@ -72,6 +72,9 @@ class PriceService:
 def _price_all(
     provider: PriceProvider, tickers: list[str], session_date: date, kind: Literal["open", "close"]
 ) -> dict[str, PriceQuote]:
+    """Batch-prune tickers, then fetch individually (AS §8.3 pricing pipeline)."""
+    # Prime the cache — batch-fetches stale/missing symbols to reduce Yahoo requests.
+    provider.prime(tickers, session_date, kind)
     quotes: dict[str, PriceQuote] = {}
     for ticker in tickers:
         quote = validate_quote(provider.get_price(ticker, session_date, kind))
