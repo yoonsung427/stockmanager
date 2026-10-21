@@ -43,9 +43,13 @@ class YahooPriceProvider:
 
     ``now`` is the injected clock (AS P8, must be tz-aware) and ``session_close`` maps a session date to its close
     instant (the calendar). ``regularMarketPrice`` is only a cross-check that logs a warning.
+
+    In-memory TTL cache (60s) — avoids re-fetching the same price within a single valuation or across ticks
+    on the same day.
     """
 
     name: Literal["yahoo", "finnhub"] = "yahoo"
+    _CACHE_TTL = 60  # seconds — quotes don't change during a trading day
 
     def __init__(
         self,
@@ -58,10 +62,19 @@ class YahooPriceProvider:
         self._session_close = session_close
         self._get = http_get
         self._sleep = sleep
+        self._cache: dict[tuple[str, date, str], tuple[PriceQuote, float]] = {}
 
     def get_price(self, ticker: str, session_date: date, kind: Literal["open", "close"]) -> PriceQuote:
         """Return the open or close of ``ticker`` for ``session_date`` from its daily bar."""
+        key = (ticker, session_date, kind)
         now = self._now()
+        # Check cache
+        cached = self._cache.get(key)
+        if cached is not None:
+            quote, ts = cached
+            if now.timestamp() - ts < self._CACHE_TTL:
+                return quote
+
         if kind == "close" and now < self._session_close(session_date) + SETTLE:
             raise PriceError("incomplete_session", ticker, f"{session_date} close not settled at {now.isoformat()}")
         url = f"{BASE_URL}{ticker.upper()}?{QUERY}"
@@ -93,6 +106,7 @@ class YahooPriceProvider:
         quote = validate_quote(PriceQuote(ticker, session_date, kind, q4(raw), "yahoo", now))
         if kind == "close" and i == len(dates) - 1:
             _cross_check(meta, quote)
+        self._cache[key] = (quote, now.timestamp())
         return quote
 
 
@@ -156,54 +170,3 @@ def _cross_check(meta: Mapping[str, Any], quote: PriceQuote) -> None:
         )
 
 
-def _parse_batch(
-    body: bytes, tickers: list[str], session_date: date, kind: Literal["open", "close"], now: datetime
-) -> dict[str, PriceQuote]:
-    """Parse a batch Yahoo chart response into PriceQuotes."""
-    try:
-        doc = json.loads(body, parse_float=Decimal, parse_constant=Decimal)
-        root = _dict(doc, tickers[0], "response")
-        chart = root["chart"]
-    except (ValueError, KeyError, TypeError) as e:
-        raise PriceError("malformed", tickers[0], f"unparseable response: {type(e).__name__}: {e}") from e
-    if chart.get("error") is not None:
-        raise PriceError("malformed", tickers[0], f"chart.error: {chart['error']}")
-    results = chart["result"]
-    if not isinstance(results, list) or len(results) == 0:
-        raise PriceError("malformed", tickers[0], "chart.result is empty or not a list")
-
-    quotes: dict[str, PriceQuote] = {}
-    for result in results:
-        if not isinstance(result, dict):
-            # Yahoo returns null for unknown symbols — skip
-            continue
-        meta = _dict(result.get("meta"), tickers[0], "meta")
-        symbol = meta.get("symbol", "")
-        if not symbol or symbol not in {t.upper() for t in tickers}:
-            continue
-        _check_instrument(meta, symbol)
-        tz = _exchange_tz(meta, symbol)
-        timestamps = result.get("timestamp")
-        if not isinstance(timestamps, list) or not all(isinstance(t, int) for t in timestamps):
-            raise PriceError("malformed", symbol, "timestamp[] missing or not integers")
-        dates = [datetime.fromtimestamp(t, UTC).astimezone(tz).date() for t in timestamps]
-        series = _series(result, kind, len(dates), symbol)
-        if session_date not in dates:
-            raise PriceError(
-                "stale_date" if dates and session_date > dates[-1] else "missing",
-                symbol, f"no bar for {session_date}"
-            )
-        i = dates.index(session_date)
-        raw = series[i]
-        if raw is None:
-            raise PriceError("missing", symbol, f"{kind} is null for {session_date}")
-        if not isinstance(raw, int | Decimal) or isinstance(raw, bool):
-            raise PriceError("malformed", symbol, f"{kind} is not a number: {raw!r}")
-        raw = Decimal(raw)
-        if not raw.is_finite():
-            raise PriceError("non_finite", symbol, str(raw))
-        quote = validate_quote(PriceQuote(symbol, session_date, kind, q4(raw), "yahoo", now))
-        if kind == "close" and i == len(dates) - 1:
-            _cross_check(meta, quote)
-        quotes[symbol] = quote
-    return quotes
