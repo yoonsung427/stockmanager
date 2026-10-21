@@ -72,6 +72,15 @@ class PriceService:
 def _price_all(
     provider: PriceProvider, tickers: list[str], session_date: date, kind: Literal["open", "close"]
 ) -> dict[str, PriceQuote]:
+    # Use batch pricing if provider supports it (e.g. Yahoo)
+    if hasattr(provider, "get_prices_batch"):
+        quotes = provider.get_prices_batch(tickers, session_date, kind)
+        for ticker, quote in quotes.items():
+            validated = validate_quote(quote)
+            if (validated.ticker, validated.session_date, validated.kind, validated.source) != (ticker, session_date, kind, provider.name):
+                raise PriceError("malformed", ticker, f"{provider.name} returned a mismatched quote: {validated}")
+        return quotes
+    # Fall back to per-ticker pricing
     quotes: dict[str, PriceQuote] = {}
     for ticker in tickers:
         quote = validate_quote(provider.get_price(ticker, session_date, kind))

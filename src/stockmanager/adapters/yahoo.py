@@ -64,38 +64,43 @@ class YahooPriceProvider:
         now = self._now()
         if kind == "close" and now < self._session_close(session_date) + SETTLE:
             raise PriceError("incomplete_session", ticker, f"{session_date} close not settled at {now.isoformat()}")
-        # Rate-limit delay: Yahoo free tier throttles bulk requests.
-        self._sleep(YAHOO_RATE_DELAY)
         url = f"{BASE_URL}{ticker.upper()}?{QUERY}"
         body = get_with_retries(
             self._get, url, {"User-Agent": USER_AGENT, "Accept": "application/json"}, ticker, self._sleep
         )
-        result = _result(body, ticker)
-        meta = _dict(result.get("meta"), ticker, "meta")
-        _check_instrument(meta, ticker)
-        tz = _exchange_tz(meta, ticker)
-        timestamps = result.get("timestamp")
-        if not isinstance(timestamps, list) or not all(isinstance(t, int) for t in timestamps):
-            raise PriceError("malformed", ticker, "timestamp[] missing or not integers")
-        dates = [datetime.fromtimestamp(t, UTC).astimezone(tz).date() for t in timestamps]
-        series = _series(result, kind, len(dates), ticker)
-        if session_date not in dates:
-            raise PriceError(
-                "stale_date" if dates and session_date > dates[-1] else "missing", ticker, f"no bar for {session_date}"
+        quotes = _parse_batch(body, [ticker], session_date, kind, now)
+        if ticker.upper() not in quotes:
+            raise PriceError("malformed", ticker, "no result for ticker")
+        return quotes[ticker.upper()]
+
+    BATCH_SIZE = 10  # Yahoo v8 supports up to ~10 symbols per batch reliably
+    BATCH_DELAY = 5.0  # Delay between batches (not per-ticker)
+
+    def get_prices_batch(
+        self, tickers: list[str], session_date: date, kind: Literal["open", "close"]
+    ) -> dict[str, PriceQuote]:
+        """Fetch prices for a batch of tickers in one Yahoo request.
+
+        Returns a dict mapping ticker -> PriceQuote. Raises PriceError on any failure.
+        """
+        now = self._now()
+        if kind == "close" and now < self._session_close(session_date) + SETTLE:
+            raise PriceError("incomplete_session", tickers[0],
+                             f"{session_date} close not settled at {now.isoformat()}")
+
+        quotes: dict[str, PriceQuote] = {}
+        for i in range(0, len(tickers), self.BATCH_SIZE):
+            batch = tickers[i:i + self.BATCH_SIZE]
+            self._sleep(self.BATCH_DELAY)
+            symbols = ",".join(t.upper() for t in batch)
+            url = f"{BASE_URL}{symbols}?{QUERY}"
+            body = get_with_retries(
+                self._get, url, {"User-Agent": USER_AGENT, "Accept": "application/json"},
+                batch[0], self._sleep
             )
-        i = dates.index(session_date)
-        raw = series[i]
-        if raw is None:
-            raise PriceError("missing", ticker, f"{kind} is null for {session_date}")
-        if not isinstance(raw, int | Decimal) or isinstance(raw, bool):
-            raise PriceError("malformed", ticker, f"{kind} is not a number: {raw!r}")
-        raw = Decimal(raw)
-        if not raw.is_finite():
-            raise PriceError("non_finite", ticker, str(raw))
-        quote = validate_quote(PriceQuote(ticker, session_date, kind, q4(raw), "yahoo", now))
-        if kind == "close" and i == len(dates) - 1:
-            _cross_check(meta, quote)
-        return quote
+            batch_quotes = _parse_batch(body, batch, session_date, kind, now)
+            quotes.update(batch_quotes)
+        return quotes
 
 
 def _result(body: bytes, ticker: str) -> dict[str, Any]:
@@ -156,3 +161,56 @@ def _cross_check(meta: Mapping[str, Any], quote: PriceQuote) -> None:
             quote.price,
             CROSS_CHECK_TOLERANCE,
         )
+
+
+def _parse_batch(
+    body: bytes, tickers: list[str], session_date: date, kind: Literal["open", "close"], now: datetime
+) -> dict[str, PriceQuote]:
+    """Parse a batch Yahoo chart response into PriceQuotes."""
+    try:
+        doc = json.loads(body, parse_float=Decimal, parse_constant=Decimal)
+        root = _dict(doc, tickers[0], "response")
+        chart = root["chart"]
+    except (ValueError, KeyError, TypeError) as e:
+        raise PriceError("malformed", tickers[0], f"unparseable response: {type(e).__name__}: {e}") from e
+    if chart.get("error") is not None:
+        raise PriceError("malformed", tickers[0], f"chart.error: {chart['error']}")
+    results = chart["result"]
+    if not isinstance(results, list) or len(results) == 0:
+        raise PriceError("malformed", tickers[0], "chart.result is empty or not a list")
+
+    quotes: dict[str, PriceQuote] = {}
+    for result in results:
+        if not isinstance(result, dict):
+            # Yahoo returns null for unknown symbols — skip
+            continue
+        meta = _dict(result.get("meta"), tickers[0], "meta")
+        symbol = meta.get("symbol", "")
+        if not symbol or symbol not in {t.upper() for t in tickers}:
+            continue
+        _check_instrument(meta, symbol)
+        tz = _exchange_tz(meta, symbol)
+        timestamps = result.get("timestamp")
+        if not isinstance(timestamps, list) or not all(isinstance(t, int) for t in timestamps):
+            raise PriceError("malformed", symbol, "timestamp[] missing or not integers")
+        dates = [datetime.fromtimestamp(t, UTC).astimezone(tz).date() for t in timestamps]
+        series = _series(result, kind, len(dates), symbol)
+        if session_date not in dates:
+            raise PriceError(
+                "stale_date" if dates and session_date > dates[-1] else "missing",
+                symbol, f"no bar for {session_date}"
+            )
+        i = dates.index(session_date)
+        raw = series[i]
+        if raw is None:
+            raise PriceError("missing", symbol, f"{kind} is null for {session_date}")
+        if not isinstance(raw, int | Decimal) or isinstance(raw, bool):
+            raise PriceError("malformed", symbol, f"{kind} is not a number: {raw!r}")
+        raw = Decimal(raw)
+        if not raw.is_finite():
+            raise PriceError("non_finite", symbol, str(raw))
+        quote = validate_quote(PriceQuote(symbol, session_date, kind, q4(raw), "yahoo", now))
+        if kind == "close" and i == len(dates) - 1:
+            _cross_check(meta, quote)
+        quotes[symbol] = quote
+    return quotes
