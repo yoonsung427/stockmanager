@@ -20,6 +20,11 @@ from stockmanager.pricing.validate import validate_quote
 
 log = logging.getLogger(__name__)
 
+# Per-request delay to avoid Yahoo rate-limiting (429) on bulk valuations.
+# Yahoo free tier: ~200 req/hr; ~90 tickers per valuation (holdings + sector ETFs + benchmark).
+# 20s between requests keeps us at ~45 req/hr, well under the limit.
+YAHOO_RATE_DELAY = 20.0
+
 BASE_URL = "https://query2.finance.yahoo.com/v8/finance/chart/"
 QUERY = "interval=1d&range=3mo&includePrePost=false"
 INSTRUMENT_TYPES = frozenset({"EQUITY", "ETF"})
@@ -59,6 +64,8 @@ class YahooPriceProvider:
         now = self._now()
         if kind == "close" and now < self._session_close(session_date) + SETTLE:
             raise PriceError("incomplete_session", ticker, f"{session_date} close not settled at {now.isoformat()}")
+        # Rate-limit delay: Yahoo free tier throttles bulk requests.
+        self._sleep(YAHOO_RATE_DELAY)
         url = f"{BASE_URL}{ticker.upper()}?{QUERY}"
         body = get_with_retries(
             self._get, url, {"User-Agent": USER_AGENT, "Accept": "application/json"}, ticker, self._sleep
