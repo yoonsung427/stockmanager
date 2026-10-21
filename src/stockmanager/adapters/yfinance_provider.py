@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
+import yfinance as yf
+
 from stockmanager.domain.docs import PriceQuote
 from stockmanager.domain.money import q4
 from stockmanager.pricing.errors import PriceError
@@ -266,8 +268,6 @@ class YfinancePriceProvider:
     def _fetch_chunk(
         self, tickers: list[str], session_date: date, kind: Literal["open", "close"], now: datetime
     ) -> dict[str, Exception]:
-        import yfinance as yf  # local import: heavy dependency, only needed when actually fetching
-
         failures: dict[str, Exception] = {}
         try:
             df = yf.download(
@@ -301,8 +301,6 @@ class YfinancePriceProvider:
         return failures
 
     def _fetch_one(self, ticker: str, session_date: date, kind: Literal["open", "close"], now: datetime) -> PriceQuote:
-        import yfinance as yf  # local import: heavy dependency, only needed when actually fetching
-
         ticker = ticker.upper()
         try:
             tk = yf.Ticker(ticker)
