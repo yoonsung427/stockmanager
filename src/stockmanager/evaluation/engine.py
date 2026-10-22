@@ -8,9 +8,11 @@ the lock is held only to commit, with an optimistic ``rev`` check guarding again
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from typing import Literal
 
 from stockmanager.config.model import Config
@@ -35,7 +37,7 @@ from stockmanager.pricing.service import PriceService
 from stockmanager.scheduler.scheduler import ScheduleSlot
 from stockmanager.store import FileStore
 from stockmanager.store.lock import Clock, LockBusy
-from stockmanager.store.transaction import GateError, ReconcileHalt
+from stockmanager.store.transaction import GateError, ReconcileHalt, Transaction
 
 Outcome = Literal[
     "completed",
@@ -46,6 +48,39 @@ Outcome = Literal[
     "lock_busy",
     "aborted_state_changed",
 ]
+
+
+#: At most this many minor divergences are logged and tolerated; more than this halts.
+MAX_MINOR_DIVERGENCES = 3
+#: A share-count difference up to this size is "minor"; anything else is critical.
+MINOR_SHARE_DELTA = Decimal("1")
+_MINOR_RE = re.compile(r"^[^:]+: shares stored (?P<stored>\d+\.\d+), derived (?P<derived>\d+\.\d+)$")
+
+_log = logging.getLogger(__name__)
+
+
+def _is_minor(divergence: str) -> bool:
+    """True for a small share-count difference on a position that is open on both sides.
+
+    Cash, cost basis, missing or extra positions, a zero-share position that should have been closed and every
+    ``trades.log`` mismatch are critical.
+    """
+    m = _MINOR_RE.match(divergence)
+    if m is None:
+        return False
+    stored, derived = Decimal(m["stored"]), Decimal(m["derived"])
+    return stored > 0 and derived > 0 and abs(stored - derived) <= MINOR_SHARE_DELTA
+
+
+def _reconcile_tolerant(txn: Transaction) -> None:
+    """Reconcile, warning and carrying on when there are <= 3 divergences and all are minor; otherwise re-raise."""
+    try:
+        txn.reconcile()
+    except ReconcileHalt as exc:
+        if len(exc.divergences) > MAX_MINOR_DIVERGENCES or not all(_is_minor(d) for d in exc.divergences):
+            raise
+        for d in exc.divergences:
+            _log.warning("Reconcile: minor divergence, continuing: %s", d)
 
 
 @dataclass(frozen=True)
@@ -117,7 +152,7 @@ class EvaluationEngine:
             return RunResult("skipped_not_live", snapshot.status)
         try:
             with self._store.transaction("evaluation:precheck", max_attempts=1, sleep_seconds=0) as txn:
-                txn.reconcile()
+                _reconcile_tolerant(txn)
         except ReconcileHalt as exc:
             emit_reconcile_divergence(self._store, exc.divergences)
             return RunResult("halted_reconcile", "; ".join(exc.divergences))
@@ -173,7 +208,7 @@ class EvaluationEngine:
         try:
             with self._store.transaction("evaluation") as txn:
                 txn.require(status="LIVE")
-                txn.reconcile()
+                _reconcile_tolerant(txn)
                 if txn.state.rev != rev_before:
                     return RunResult("aborted_state_changed", "rev changed since phase A; the tick retries")
                 now = self._clock()
@@ -216,7 +251,7 @@ class EvaluationEngine:
         try:
             model = build_dashboard(self._store, self._clock)
             html = render_dashboard(model)
-            write_dashboard(self._store, model, html)
+            write_dashboard(model, self._store.root, render_dashboard, {})
         except Exception:
             logging.getLogger(__name__).exception("Dashboard build failed")
         return RunResult("completed", failure_reason)
