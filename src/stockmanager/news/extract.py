@@ -18,15 +18,15 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from importlib.resources import files
 from importlib.resources.abc import Traversable
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Literal, Protocol
 
-import anthropic
 import jinja2
 import jinja2.sandbox
 import yaml
 from pydantic import BaseModel, ValidationError
 
 from stockmanager.domain.docs import NewsEvent
+from stockmanager.llm.protocol import LLMAuthError, LLMBackend, LLMTimeout
 from stockmanager.news import Rejection
 from stockmanager.news.config import NewsConfig
 from stockmanager.news.normalise import PreparedItem
@@ -189,23 +189,15 @@ def parse_candidates(text: str) -> list[Candidate]:
         raise ExtractFailure("extract_schema") from e
 
 
-class _Messages(Protocol):
-    def create(self, **kwargs: Any) -> Any: ...
-
-
-class _Client(Protocol):
-    @property
-    def messages(self) -> _Messages: ...
-
-
 class AnthropicExtractor:
-    """Calls ``llm.extractor_model`` with structured outputs: no tools, no web, thinking off, effort low."""
+    """Calls ``llm.extractor_model`` through an ``LLMBackend`` with structured output: no tools, no web."""
 
-    def __init__(self, prompt: ExtractorPrompt, config: NewsConfig, client: _Client | None = None) -> None:
+    def __init__(self, prompt: ExtractorPrompt, config: NewsConfig, backend: LLMBackend) -> None:
         self._prompt = prompt
         self._model = config.extractor_model
         self._max_tokens = config.extractor.max_tokens
         self._timeout = config.extractor.timeout_s
+        self._backend = backend
         if prompt.target_model != self._model:
             log.warning(
                 "extractor prompt %s was tested on %s, configured model is %s",
@@ -213,10 +205,6 @@ class AnthropicExtractor:
                 prompt.target_model,
                 self._model,
             )
-        # The SDK retries 408/409/429/5xx and timeouts itself.
-        self._client: _Client = client or cast(
-            _Client, anthropic.Anthropic(max_retries=config.extractor.max_retries, timeout=self._timeout)
-        )
 
     def verify(self) -> None:
         """The prompt was verified when loaded; nothing further to check."""
@@ -225,30 +213,25 @@ class AnthropicExtractor:
         """One call for one item. Raises ``ExtractFailure`` with the §4.3 reason code."""
         user = self._prompt.render_user(item, ctx)
         try:
-            resp = self._client.messages.create(
+            result = self._backend.chat_completion(
                 model=self._model,
-                max_tokens=self._max_tokens,
                 system=self._prompt.system,
-                messages=[{"role": "user", "content": user}],
-                thinking={"type": "disabled"},
-                output_config={"effort": "low", "format": {"type": "json_schema", "schema": self._prompt.schema}},
+                user=user,
+                max_tokens=self._max_tokens,
+                json_schema=self._prompt.schema,
                 timeout=self._timeout,
             )
-        except anthropic.APITimeoutError as e:
+        except LLMTimeout as e:
             raise ExtractFailure("extract_timeout", infra=True) from e
-        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
+        except LLMAuthError as e:
             raise ExtractFailure("extract_infra", infra=True, auth=True) from e
-        except (anthropic.APIStatusError, anthropic.APIConnectionError) as e:
+        except Exception as e:  # LLMError and anything a backend failed to translate
             raise ExtractFailure("extract_infra", infra=True) from e
-        except Exception as e:  # missing or unresolvable credentials surface as TypeError / AnthropicError
-            raise ExtractFailure("extract_infra", infra=True, auth=True) from e
-        stop = str(resp.stop_reason)
-        if stop == "refusal":
+        if result.stop_reason == "refusal":
             raise ExtractFailure("extract_refusal")
-        if stop == "max_tokens":
+        if result.stop_reason == "max_tokens":
             raise ExtractFailure("extract_max_tokens")
-        text = "".join(b.text for b in resp.content if b.type == "text")
-        return parse_candidates(text)
+        return parse_candidates(result.text)
 
 
 class UnavailableExtractor:
@@ -266,10 +249,10 @@ class UnavailableExtractor:
         raise ExtractorUnavailable(self._reason)
 
 
-def build_extractor(config: NewsConfig, client: _Client | None = None) -> Extractor:
+def build_extractor(backend: LLMBackend, config: NewsConfig) -> Extractor:
     """The real extractor, or an ``UnavailableExtractor`` if the prompt fails its integrity check."""
     try:
-        return AnthropicExtractor(load_extractor_prompt(), config, client)
+        return AnthropicExtractor(load_extractor_prompt(), config, backend)
     except ExtractorUnavailable as e:
         return UnavailableExtractor(str(e))
 

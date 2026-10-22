@@ -1,6 +1,7 @@
 """The Reasoner (LLM seam 2, AS §8.1, LP §4): facts, prices and portfolio state in, trade *intent* out.
 
-One streamed call per cycle with structured output, adaptive thinking and explicit effort. Any failure (refusal,
+One call per cycle through an ``LLMBackend`` with structured output (the Anthropic backend streams it with adaptive
+thinking and explicit effort). Any failure (refusal,
 truncation, timeout, schema) raises ``ReasonerFailure``: the cycle then has no proposals (fail closed, AS §5.2).
 """
 
@@ -8,9 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Literal, Protocol, Self, cast
+from typing import Any, Literal, Protocol
 
-import anthropic
 from pydantic import ValidationError
 
 from stockmanager.config.llm import LLMConfig
@@ -21,6 +21,7 @@ from stockmanager.evaluation.prompts import (
     load_reasoner_prompt,
 )
 from stockmanager.evaluation.reasoner_io import ReasonerInput, ReasonerOutput, TradeIdea
+from stockmanager.llm.protocol import LLMBackend, LLMTimeout
 
 log = logging.getLogger(__name__)
 
@@ -84,33 +85,16 @@ def parse_output(text: str) -> ReasonerOutput:
         raise ReasonerFailure("reasoner_schema") from e
 
 
-class _Stream(Protocol):
-    def __enter__(self) -> Self: ...
-    def __exit__(self, *exc: object) -> None: ...
-    def get_final_message(self) -> Any: ...
-
-
-class _Messages(Protocol):
-    def stream(self, **kwargs: Any) -> _Stream: ...
-
-
-class _Client(Protocol):
-    @property
-    def messages(self) -> _Messages: ...
-
-
 class AnthropicReasoner:
-    """Calls ``llm.reasoner_model``: no tools, no web, adaptive thinking, explicit effort, streamed, structured output."""
+    """Calls ``llm.reasoner_model`` through an ``LLMBackend``: one call, structured output, no tools, no web."""
 
-    def __init__(
-        self, prompt: ReasonerPrompt, config: LLMConfig, limits: ProposalConfig, client: _Client | None = None
-    ) -> None:
+    def __init__(self, prompt: ReasonerPrompt, config: LLMConfig, limits: ProposalConfig, backend: LLMBackend) -> None:
         self._prompt = prompt
         self._model = config.reasoner_model
         self._max_tokens = config.reasoner_max_tokens
-        self._effort = config.reasoner_effort
         self._timeout = config.reasoner_timeout_s
         self._system = prompt.render_system(limits)
+        self._backend = backend
         self.last_model_id: str | None = None  # the model that actually answered (refusal fallbacks may switch it)
         if prompt.target_model != self._model:
             log.warning(
@@ -119,46 +103,32 @@ class AnthropicReasoner:
                 prompt.target_model,
                 self._model,
             )
-        # The SDK retries 408/409/429/5xx and timeouts itself.
-        self._client: _Client = client or cast(
-            _Client, anthropic.Anthropic(max_retries=config.reasoner_max_retries, timeout=float(self._timeout))
-        )
 
     def verify(self) -> None:
         """The prompt was verified when loaded; nothing further to check."""
 
     def evaluate(self, input: ReasonerInput) -> ReasonerOutput:
-        """One streamed call. Raises ``ReasonerFailure`` with the LP §4.1 reason code."""
+        """One call. Raises ``ReasonerFailure`` with the LP §4.1 reason code."""
         user = self._prompt.render_user(input)
         try:
-            with self._client.messages.stream(
+            result = self._backend.chat_completion(
                 model=self._model,
-                max_tokens=self._max_tokens,
                 system=self._system,
-                messages=[{"role": "user", "content": user}],
-                thinking={"type": "adaptive"},
-                output_config={
-                    "effort": self._effort,
-                    "format": {"type": "json_schema", "schema": self._prompt.schema},
-                },
+                user=user,
+                max_tokens=self._max_tokens,
+                json_schema=self._prompt.schema,
                 timeout=float(self._timeout),
-            ) as stream:
-                resp = stream.get_final_message()
-        except anthropic.APITimeoutError as e:
+            )
+        except LLMTimeout as e:
             raise ReasonerFailure("reasoner_timeout", infra=True) from e
-        except (anthropic.APIStatusError, anthropic.APIConnectionError) as e:
+        except Exception as e:  # LLMError and anything a backend failed to translate
             raise ReasonerFailure("reasoner_infra", infra=True) from e
-        except Exception as e:  # missing or unresolvable credentials surface as TypeError / AnthropicError
-            raise ReasonerFailure("reasoner_infra", infra=True) from e
-        model = getattr(resp, "model", None)
-        self.last_model_id = model if isinstance(model, str) else None
-        stop = str(resp.stop_reason)
-        if stop == "refusal":
+        self.last_model_id = result.model_id
+        if result.stop_reason == "refusal":
             raise ReasonerFailure("reasoner_refusal")
-        if stop == "max_tokens":
+        if result.stop_reason == "max_tokens":
             raise ReasonerFailure("reasoner_max_tokens")
-        text = "".join(b.text for b in resp.content if b.type == "text")
-        return parse_output(text)
+        return parse_output(result.text)
 
 
 class UnavailableReasoner:
@@ -176,9 +146,9 @@ class UnavailableReasoner:
         raise ReasonerUnavailable(self._reason)
 
 
-def build_reasoner(config: LLMConfig, limits: ProposalConfig, client: _Client | None = None) -> Reasoner:
+def build_reasoner(backend: LLMBackend, config: LLMConfig, limits: ProposalConfig) -> Reasoner:
     """The real Reasoner, or an ``UnavailableReasoner`` if the prompt fails its integrity check."""
     try:
-        return AnthropicReasoner(load_reasoner_prompt(), config, limits, client)
+        return AnthropicReasoner(load_reasoner_prompt(), config, limits, backend)
     except ReasonerUnavailable as e:
         return UnavailableReasoner(str(e))

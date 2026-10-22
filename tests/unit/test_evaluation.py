@@ -43,6 +43,7 @@ from stockmanager.evaluation import (
 )
 from stockmanager.evaluation.prompts import _prompts_root
 from stockmanager.evaluation.reasoner_io import FactProjection, SizeIntent
+from stockmanager.llm.anthropic import AnthropicLLMBackend
 from tests.support.books import PT, T0, FixedClock
 
 REQ = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
@@ -455,7 +456,9 @@ class FakeClient:
 
 def reasoner(outcome: Any, llm: LLMConfig | None = None) -> tuple[AnthropicReasoner, FakeClient]:
     client = FakeClient(outcome)
-    return AnthropicReasoner(load_reasoner_prompt(), llm or LLMConfig(), ProposalConfig(), client), client
+    llm = llm or LLMConfig()
+    backend = AnthropicLLMBackend(llm, ProposalConfig(), client=client)
+    return AnthropicReasoner(load_reasoner_prompt(), llm, ProposalConfig(), backend), client
 
 
 def test_reasoner_happy_path_and_request() -> None:
@@ -526,7 +529,7 @@ def test_build_reasoner_falls_back_when_prompt_is_bad(monkeypatch: pytest.Monkey
         raise ReasonerPromptIntegrityError("bad hash")
 
     monkeypatch.setattr(mod, "load_reasoner_prompt", boom)
-    r = build_reasoner(LLMConfig(), ProposalConfig(), FakeClient(None))
+    r = build_reasoner(AnthropicLLMBackend(LLMConfig(), client=FakeClient(None)), LLMConfig(), ProposalConfig())
     assert isinstance(r, UnavailableReasoner)
     with pytest.raises(ReasonerUnavailable, match="bad hash"):
         r.verify()

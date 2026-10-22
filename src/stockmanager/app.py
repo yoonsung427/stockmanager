@@ -33,6 +33,7 @@ from stockmanager.evaluation.reasoner import Reasoner, build_reasoner
 from stockmanager.evaluation.reconfirm import ReconfirmEngine
 from stockmanager.evaluation.thesis_checker import ThesisReview
 from stockmanager.execution.engine import ExecutionEngine
+from stockmanager.llm.anthropic import AnthropicLLMBackend
 from stockmanager.news import NewsResult
 from stockmanager.news.config import NewsConfig
 from stockmanager.news.extract import Extractor, build_extractor
@@ -178,8 +179,19 @@ def create_app(workspace_path: str | Path, config_path: str | Path | None = None
         FinnhubNewsFetcher(),
         YahooRssFetcher(),
     ]
-    extractor = build_extractor(news_config)
-    reasoner = build_reasoner(cfg.llm, cfg.proposals)
+    # The Extractor's call differs from the Reasoner's (no thinking, effort low, not streamed, its own retries), so
+    # each gets its own Anthropic backend instance; swap either for another LLMBackend here.
+    reasoner_backend = AnthropicLLMBackend(cfg.llm, cfg.proposals)
+    extractor_backend = AnthropicLLMBackend(
+        cfg.llm,
+        cfg.proposals,
+        thinking="disabled",
+        effort="low",
+        stream=False,
+        max_retries=news_config.extractor.max_retries,
+    )
+    extractor = build_extractor(extractor_backend, news_config)
+    reasoner = build_reasoner(reasoner_backend, cfg.llm, cfg.proposals)
 
     command_ctx = CommandContext(
         store=store, cfg=cfg, clock=clock, calendar=calendar, price_provider=price_primary, price_fallback=price_fallback

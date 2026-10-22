@@ -13,6 +13,8 @@ import httpx2
 import pytest
 from pydantic import ValidationError
 
+from stockmanager.config.llm import LLMConfig
+from stockmanager.llm.anthropic import AnthropicLLMBackend
 from stockmanager.news.config import ExtractorConfig, NewsConfig
 from stockmanager.news.extract import (
     AnthropicExtractor,
@@ -129,7 +131,7 @@ def test_build_extractor_degrades_to_unavailable(monkeypatch: pytest.MonkeyPatch
     import stockmanager.news.extract as mod
 
     monkeypatch.setattr(mod, "_prompts_root", lambda: tmp_path)
-    ex = build_extractor(NewsConfig())
+    ex = build_extractor(extractor_backend(FakeClient(None)), NewsConfig())
     assert isinstance(ex, UnavailableExtractor)
     with pytest.raises(ExtractorUnavailable):
         ex.verify()
@@ -184,9 +186,13 @@ class FakeClient:
         return self.outcome
 
 
+def extractor_backend(client: Any) -> AnthropicLLMBackend:
+    return AnthropicLLMBackend(LLMConfig(), thinking="disabled", effort="low", stream=False, client=client)
+
+
 def extractor(outcome: Any) -> tuple[AnthropicExtractor, FakeClient]:
     client = FakeClient(outcome)
-    return AnthropicExtractor(load_extractor_prompt(), NewsConfig(), client), client
+    return AnthropicExtractor(load_extractor_prompt(), NewsConfig(), extractor_backend(client)), client
 
 
 def test_request_parameters() -> None:
@@ -205,7 +211,9 @@ def test_request_parameters() -> None:
 
 def test_model_comes_from_config() -> None:
     client = FakeClient(Resp())
-    AnthropicExtractor(load_extractor_prompt(), NewsConfig(extractor_model="claude-haiku-5-5"), client).extract(
+    AnthropicExtractor(
+        load_extractor_prompt(), NewsConfig(extractor_model="claude-haiku-5-5"), extractor_backend(client)
+    ).extract(
         prepared(), CTX
     )
     assert client.calls[0]["model"] == "claude-haiku-5-5"
