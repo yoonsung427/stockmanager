@@ -66,6 +66,7 @@ You stay in control: you can veto any proposal, pause everything, or (if you tur
 | `workspace/state/` | Bot cursor and heartbeat, scheduler heartbeat, tick lock |
 | `workspace/nav_history/` | NAV time series |
 | `workspace/extracted-facts/` | News facts extracted per cycle |
+| `~/.config/stockmanager/secrets.env` | API keys (injected into `os.environ` at startup) |
 
 ### Running the CLI
 
@@ -645,11 +646,16 @@ The `proposals:` block in `config.yaml` repeats some top-level keys (`max_positi
 
 API keys and the Discord token are not stored in `config.yaml`. They come from environment variables or a secrets file:
 
+**Secrets file location:** `~/.config/stockmanager/secrets.env`
+
+On startup, `app.py` reads this file and injects each `KEY=VALUE` line into `os.environ` (only if not already set). Override the path with the `STOCKMANAGER_SECRETS` environment variable.
+
 | Name | Needed for |
 |---|---|
 | `DISCORD_BOT_TOKEN` | Running the bot |
 | `FINNHUB_API_KEY` | Fallback prices and some news |
 | `ANTHROPIC_API_KEY` | The reasoning step |
+| `SEARXNG_URL` | SearXNG news search (primary) |
 
 ---
 
