@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -45,12 +46,18 @@ class FakeProvider:
             raise PriceError("missing", ticker)
         return PriceQuote(ticker, session_date, kind, self.prices[ticker], self.name, NOW)
 
+    def prime(self, tickers: Sequence[str], session_date: date, kind: Literal["open", "close"]) -> dict[str, Exception]:
+        return {}
+
 
 class FailingProvider:
     name: Literal["yahoo", "finnhub"] = "yahoo"
 
     def get_price(self, ticker: str, session_date: date, kind: Literal["open", "close"]) -> PriceQuote:
         raise PriceError("timeout", ticker)
+
+    def prime(self, tickers: Sequence[str], session_date: date, kind: Literal["open", "close"]) -> dict[str, Exception]:
+        return {}
 
 
 @pytest.fixture

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -54,6 +55,9 @@ class FakeProvider:
         return PriceQuote(
             ticker=ticker, session_date=session_date, kind=kind, price=self.price, source=self.name, fetched_at=datetime.now(PT)
         )
+
+    def prime(self, tickers: Sequence[str], session_date: date, kind: Literal["open", "close"]) -> dict[str, Exception]:
+        return {}
 
 
 class FakeThesis:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -40,6 +41,9 @@ class FakePriceProvider:
             source="yahoo",
             fetched_at=datetime.now(PT),
         )
+
+    def prime(self, tickers: Sequence[str], session_date: date, kind: Literal["open", "close"]) -> dict[str, Exception]:
+        return {}
 
 
 @pytest.fixture
