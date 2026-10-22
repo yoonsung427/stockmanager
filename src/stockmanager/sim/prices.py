@@ -45,3 +45,7 @@ class ScriptedPriceProvider:
         """Make every scripted ticker (and none other) fail with ``kind``."""
         for t in self.script:
             self.script[t] = kind
+
+    def prime(self, tickers: list[str], session_date: date, kind: Literal["open", "close"]) -> dict[str, Exception]:
+        """No-op — scripted provider has no cache to warm."""
+        return {}
