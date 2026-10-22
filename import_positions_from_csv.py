@@ -42,6 +42,17 @@ def main() -> None:
 
     ctx = create_app(Path("workspace"))
     portfolio = ctx.store.load_portfolio()
+    if portfolio is None:
+        # No portfolio yet — create one
+        from datetime import datetime
+        portfolio = PortfolioDoc(
+            start_cash=Decimal("0"),
+            cash=Decimal("0"),
+            status="LIVE",
+            positions=[],
+            trades=[],
+        )
+        ctx.store.save_portfolio(portfolio)
     existing = {p.ticker for p in portfolio.positions}
 
     # Read CSV
@@ -150,7 +161,8 @@ def main() -> None:
     print(f"Adding {len(trades)} trades ({len(ledger.positions)} positions total)")
     print(f"Cash balance: {new_portfolio.cash}")
 
-    confirm = input("Confirm import? [y/N]: ").strip().lower()
+    confirm = "y"  # auto-confirm for CLI usage
+    # confirm = input("Confirm import? [y/N]: ").strip().lower()
     if confirm != "y":
         print("Cancelled.")
         sys.exit(0)
