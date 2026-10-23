@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class SummaryConfig(BaseModel):
-    """Settings for the summary generator, which talks to an OpenAI-compatible server (llama.cpp), not Anthropic."""
+    """Settings for the summary generator, which talks to an OpenAI-compatible server (LM Studio), not Anthropic."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -14,8 +14,8 @@ class SummaryConfig(BaseModel):
     digest_at_close: bool = True
     alert_on_threshold: bool = True
     price_threshold_pct: float = Field(default=5.0, gt=0, le=100)
-    model: str = "Qwen3.6-27B-Q3_K_M"
-    base_url: str = "http://llm.paelab.com:8080/v1"
+    model: str = "google/gemma-4-12b"
+    base_url: str = "http://localhost:1234/v1"
     max_tokens: int = Field(default=4000, ge=1)
     temperature: float = Field(default=0.3, ge=0, le=2)
     timeout_s: int = Field(default=60, ge=1)
