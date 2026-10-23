@@ -207,6 +207,18 @@ def test_get_price_fallback_to_stale_cache_on_fetch_failure(tmp_path: Path) -> N
         mock_yf.Ticker.return_value = mock_ticker
         quote = p.get_price("AAPL", date(2026, 10, 16), "close")
         assert quote.price == Decimal("150.0000")
+        assert quote.stale is True
+
+
+def test_get_price_fresh_cache_is_not_flagged_stale(tmp_path: Path) -> None:
+    from stockmanager.adapters.yfinance_provider import _CacheEntry
+    now = _now()
+    p = _provider(tmp_path, now=now)
+    p._cache["AAPL|2026-10-16|close"] = _CacheEntry(
+        ticker="AAPL", session_date="2026-10-16", kind="close",
+        price="150.00", source="yahoo", fetched_at=now.isoformat(), cached_at=now.timestamp(),
+    )
+    assert p.get_price("AAPL", date(2026, 10, 16), "close").stale is False
 
 
 def test_get_price_raises_when_no_cache_and_fetch_fails(tmp_path: Path) -> None:

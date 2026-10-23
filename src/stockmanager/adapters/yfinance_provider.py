@@ -9,8 +9,8 @@ Fetch strategy:
   * ``prime(tickers, session_date, kind)`` batch-fetches every stale/missing symbol via ``yf.download()``
     in chunks of 15, sleeping 2-4s (jittered) between chunks to stay polite to Yahoo.
   * Failed symbols are retried individually with exponential backoff (5s, 10s, 20s, 40s base + jitter).
-  * If Yahoo fails outright for a symbol, a cached price is returned flagged ``stale=True`` rather than
-    raising, so a valuation can still proceed on day-old (or older) data when Yahoo is unreachable.
+  * If Yahoo fails outright for a symbol, ``get_price()`` returns the expired cache entry as a ``PriceQuote``
+    with ``stale=True`` rather than raising; ``PriceService`` prefers a fresh fallback source over it.
   * ``get_price()`` itself fetches a single ticker on demand (via ``yf.Ticker(...).history()``) when it
     is not already in the cache and the caller did not call ``prime()`` first.
 """
@@ -91,7 +91,7 @@ class _CacheEntry:
             cached_at=data["cached_at"],
         )
 
-    def to_quote(self) -> PriceQuote:
+    def to_quote(self, *, stale: bool = False) -> PriceQuote:
         return PriceQuote(
             self.ticker,
             date.fromisoformat(self.session_date),
@@ -99,6 +99,7 @@ class _CacheEntry:
             Decimal(self.price),
             self.source,  # type: ignore[arg-type]
             datetime.fromisoformat(self.fetched_at),
+            stale=stale,
         )
 
 
@@ -180,7 +181,7 @@ class YfinancePriceProvider:
         except PriceError:
             if entry is not None:
                 log.warning("yfinance %s: fetch failed, falling back to stale cache entry", ticker)
-                return entry.to_quote()
+                return entry.to_quote(stale=True)
             raise
         self._cache[key] = _CacheEntry(
             ticker=quote.ticker,
@@ -199,8 +200,8 @@ class YfinancePriceProvider:
 
         Fetches in chunks of ``chunk_size`` via ``yf.download()``, sleeping (jittered 2-4s) between
         chunks. Failed symbols are retried individually with exponential backoff. Symbols that still
-        fail after retries fall back to a stale cache entry (if one exists) and are omitted from the
-        returned failures only when such a fallback succeeded.
+        fail after retries are omitted from the returned failures when an expired cache entry exists; the
+        later ``get_price()`` serves that entry flagged ``stale=True``.
         """
         now = self._now()
         if kind == "close" and now < self._session_close(session_date) + SETTLE:

@@ -45,6 +45,7 @@ class PriceQuote:
     """The price of one ticker for one session (``open`` or ``close``) from one provider (AS §6.1).
 
     ``price`` is 4 dp by construction (adapters pass it through ``q4``); ``fetched_at`` is injected-clock time.
+    ``stale`` is True when the provider could not refresh and served an expired cache entry instead.
     """
 
     ticker: str
@@ -53,6 +54,7 @@ class PriceQuote:
     price: Decimal
     source: PriceSource
     fetched_at: datetime
+    stale: bool = False
 
 
 class PriceTable(_Doc):
