@@ -1,8 +1,7 @@
 """yfinance-based Yahoo price provider with file-cached, batched, retrying fetches. AS §6.2, ⚑AD2.
 
-Differs from ``stockmanager.adapters.yahoo.YahooPriceProvider`` (the v8 chart-API adapter) in its
-fetch strategy only — the public interface (``name``, ``get_price``) and error semantics are the same
-so this type can be swapped in as a drop-in replacement.
+This is the wired primary Yahoo source. It supersedes ``stockmanager.adapters.yahoo.YahooPriceProvider`` (the
+unwired v8 chart-API adapter): same ``name``/``get_price`` semantics, plus ``prime()`` and a persistent cache.
 
 Fetch strategy:
   * A JSON file cache at ``cache_dir / "yahoo_prices.json"`` with a TTL (default 300s) avoids refetching

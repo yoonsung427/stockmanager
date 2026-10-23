@@ -11,7 +11,9 @@ Semi-autonomous **mock** portfolio manager. No real money, no brokerage: every f
 - Timestamps are ISO 8601 in PT (`America/Los_Angeles`). Session open is 06:30 PT (09:30 ET).
 
 ## Prices (SS §6, AS §6)
-- Yahoo Finance v8 chart API primary, Finnhub fallback. Source is recorded per fill (`price_source`).
+- Yahoo Finance via `yfinance` (`adapters/yfinance_provider.py`: file-cached, batched, with `prime()`) primary, Finnhub fallback. Source is recorded per fill (`price_source`).
+- `adapters/yahoo.py` (v8 chart-API `YahooPriceProvider`) is **not wired** and lacks `prime()`; only its constants (`BASE_URL`, `INSTRUMENT_TYPES`, `SETTLE`) are used, by `finnhub.py` and `symbol_verifier.py`.
+- Sessions come from `adapters/calendar.py` `JsonCalendar`, reading `data/calendars/nyse.json` (holidays, 13:00 ET early closes, fails closed outside `covers`). Regenerate with `scripts/gen_calendar.py`.
 - One source per valuation: if the primary fails for ANY ticker, redo the whole valuation on the fallback. Never mix.
 - Fail closed: if neither source can price everything, leave the portfolio unchanged.
 - Prices extracted from news/LLM text are never a price source.
@@ -24,4 +26,4 @@ Python 3.12+ (`.python-version` pins the local interpreter), pydantic v2 models 
 - `ruff` (line length 120) and `mypy --strict` must pass: `make lint`. Tests: `make test`.
 
 ## Status
-Phase 1: scaffolding and price pipeline. `pricing/` and `adapters/` are stubs.
+Price pipeline, execution/evaluation engines, dashboard, news and bot are implemented; see `docs/project-postmortem.md` for known gaps.

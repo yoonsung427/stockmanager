@@ -1,4 +1,10 @@
-"""Yahoo Finance v8 chart API price provider (primary). AS §6.2, ⚑AD2."""
+"""Yahoo Finance v8 chart API price provider. AS §6.2, ⚑AD2.
+
+Not wired into ``create_app``: the primary Yahoo source is ``yfinance_provider.YfinancePriceProvider`` (cached,
+batched, has ``prime()``). ``YahooPriceProvider`` here lacks ``prime()`` so it does not satisfy ``PriceProvider``;
+this module is kept for its shared constants and helpers (``BASE_URL``, ``INSTRUMENT_TYPES``, ``SETTLE``,
+``regular_close``), used by ``finnhub.py`` and ``symbol_verifier.py``.
+"""
 
 from __future__ import annotations
 
