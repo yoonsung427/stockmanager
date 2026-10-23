@@ -10,7 +10,7 @@ class LLMConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    reasoner_model: str = "claude-opus-5-5"
+    reasoner_model: str = "claude-sonnet-5-5"
     reasoner_max_tokens: int = Field(default=32000, ge=1)
     reasoner_effort: str = "high"
     reasoner_timeout_s: int = Field(default=120, ge=1)

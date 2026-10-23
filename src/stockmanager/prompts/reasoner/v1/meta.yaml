@@ -1,7 +1,7 @@
 schema_version: 1
 prompt: reasoner
 version: v1
-target_model: claude-opus-5-5
+target_model: claude-sonnet-5-5
 files:
   system.md.j2: "b3c57c9165e3f18383f4e31ca75687fbfd8b0d4f4b3bad175b98639cc6541caf"
   user.md.j2: "90af639bacea6ced6b7921a9e7fd985cca50cadd0824c9252d5e720d45c79053"

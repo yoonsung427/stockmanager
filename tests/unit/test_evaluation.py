@@ -359,7 +359,7 @@ def copy_prompts(tmp_path: Path) -> Path:
 
 def test_prompt_loads_and_matches_manifest() -> None:
     p = load_reasoner_prompt()
-    assert (p.version, p.target_model) == ("v1", "claude-opus-5-5")
+    assert (p.version, p.target_model) == ("v1", "claude-sonnet-5-5")
     assert len(p.sha256) == 64
     assert p.schema["required"] == ["summary", "holdings", "ideas", "hold_alternative"]
 
@@ -421,7 +421,7 @@ class Block:
 
 
 class Msg:
-    def __init__(self, text: str, stop: str = "end_turn", model: str = "claude-opus-5-5") -> None:
+    def __init__(self, text: str, stop: str = "end_turn", model: str = "claude-sonnet-5-5") -> None:
         self.content = [Block("thinking...", "thinking"), Block(text)]
         self.stop_reason = stop
         self.model = model
@@ -466,10 +466,10 @@ def test_reasoner_happy_path_and_request() -> None:
     r, client = reasoner(Msg(text))
     r.verify()
     out = r.evaluate(reasoner_input())
-    assert out.ideas[0].priority == 1 and r.last_model_id == "claude-opus-5-5"
+    assert out.ideas[0].priority == 1 and r.last_model_id == "claude-sonnet-5-5"
     kw = client.calls[0]
     prompt = load_reasoner_prompt()
-    assert kw["model"] == "claude-opus-5-5" and kw["max_tokens"] == 32000 and kw["timeout"] == 120.0
+    assert kw["model"] == "claude-sonnet-5-5" and kw["max_tokens"] == 32000 and kw["timeout"] == 120.0
     assert kw["thinking"] == {"type": "adaptive"}
     assert kw["output_config"] == {"effort": "high", "format": {"type": "json_schema", "schema": prompt.schema}}
     assert kw["system"] == prompt.render_system(ProposalConfig())
