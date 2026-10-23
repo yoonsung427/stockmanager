@@ -119,7 +119,7 @@ def pending(store: FileStore) -> list[Alert]:
 def test_summary_config_defaults_point_at_llama_cpp_on_8080() -> None:
     cfg = SummaryConfig()
     assert cfg.base_url == "http://llm.paelab.com:8080/v1"
-    assert (cfg.model, cfg.max_tokens, cfg.timeout_s, cfg.price_threshold_pct) == ("Qwen3.6-27B-Q3_K_M", 2000, 60, 5.0)
+    assert (cfg.model, cfg.max_tokens, cfg.temperature, cfg.timeout_s, cfg.price_threshold_pct) == ("Qwen3.6-27B-Q3_K_M", 4000, 0.3, 60, 5.0)
     assert Config().summary == cfg
     assert "summary." in BLOCKED_SET_PREFIXES
 

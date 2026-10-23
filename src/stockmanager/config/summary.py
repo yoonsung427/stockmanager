@@ -16,5 +16,6 @@ class SummaryConfig(BaseModel):
     price_threshold_pct: float = Field(default=5.0, gt=0, le=100)
     model: str = "Qwen3.6-27B-Q3_K_M"
     base_url: str = "http://llm.paelab.com:8080/v1"
-    max_tokens: int = Field(default=2000, ge=1)
+    max_tokens: int = Field(default=4000, ge=1)
+    temperature: float = Field(default=0.3, ge=0, le=2)
     timeout_s: int = Field(default=60, ge=1)
