@@ -20,15 +20,16 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from datetime import time as dtime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
 import yfinance as yf
@@ -233,7 +234,7 @@ class YfinancePriceProvider:
                 still_failing.pop(ticker, None)
                 break
             else:
-                still_failing[ticker] = failures[ticker]
+                still_failing[ticker] = _err
 
         self._save_cache()
 
@@ -305,7 +306,7 @@ class YfinancePriceProvider:
         try:
             tk = yf.Ticker(ticker)
             hist = tk.history(period="5d", interval="1d")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise PriceError("malformed", ticker, f"yfinance fetch failed: {type(e).__name__}: {e}") from e
 
         if hist is None or hist.empty:
@@ -385,14 +386,14 @@ def _quote_from_series(series: Any, ticker: str, session_date: date, kind: Liter
 def _to_date(idx: Any) -> date:
     # yfinance index entries are pandas.Timestamp; .date() works directly.
     if hasattr(idx, "date"):
-        return idx.date()
+        return cast(date, idx.date())
     return date.fromisoformat(str(idx)[:10])
 
 
 def _is_nan(value: Any) -> bool:
     try:
-        return value != value  # NaN != NaN
-    except TypeError:
+        return math.isnan(value)
+    except (TypeError, ValueError):
         return False
 
 

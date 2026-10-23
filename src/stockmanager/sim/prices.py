@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
@@ -46,6 +46,6 @@ class ScriptedPriceProvider:
         for t in self.script:
             self.script[t] = kind
 
-    def prime(self, tickers: list[str], session_date: date, kind: Literal["open", "close"]) -> dict[str, Exception]:
+    def prime(self, tickers: Sequence[str], session_date: date, kind: Literal["open", "close"]) -> dict[str, Exception]:
         """No-op — scripted provider has no cache to warm."""
         return {}

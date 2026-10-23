@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Literal, Sequence
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from stockmanager.adapters.http import USER_AGENT, HttpGet, get_with_retries, urllib_get

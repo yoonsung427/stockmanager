@@ -1,8 +1,9 @@
 """PriceService: primary -> fallback, one source per valuation, fail closed."""
 
+from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal, Sequence
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 import pytest

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -18,7 +18,6 @@ from stockmanager.adapters.yfinance_provider import (
     YfinancePriceProvider,
     regular_close,
 )
-from stockmanager.domain.docs import PriceQuote
 from stockmanager.pricing.errors import PriceError
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -26,7 +25,7 @@ from stockmanager.pricing.errors import PriceError
 PT = "US/Pacific"  # not used directly; tests inject a deterministic clock
 
 
-def _now(year=2026, month=10, day=16, hour=14, minute=0) -> datetime:
+def _now(year: int = 2026, month: int = 10, day: int = 16, hour: int = 14, minute: int = 0) -> datetime:
     """After 16:00 ET (19:00 PT) so close is settled."""
     return datetime(year, month, day, hour, minute, tzinfo=__import__("zoneinfo").ZoneInfo("America/Los_Angeles"))
 
@@ -80,8 +79,6 @@ def test_load_empty_cache(tmp_path: Path) -> None:
 
 def test_save_and_reload_cache(tmp_path: Path) -> None:
     p = _provider(tmp_path)
-    entry = p._cache
-    p._cache["AAPL|2026-10-16|close"] = p._cache.get("AAPL|2026-10-16|close", MagicMock())
     # Manually insert a cache entry
     from stockmanager.adapters.yfinance_provider import _CacheEntry
     entry = _CacheEntry(
@@ -235,7 +232,7 @@ def test_prime_batch_fetches_chunks(tmp_path: Path) -> None:
     p = _provider(tmp_path, now=now, sleeps=sleeps, chunk_size=2)
     tickers = ["AAPL", "MSFT", "GOOGL", "AMZN"]
     with patch("stockmanager.adapters.yfinance_provider.yf") as mock_yf:
-        def mock_download(tickers, *args, **kwargs):
+        def mock_download(tickers: Any, *args: Any, **kwargs: Any) -> Any:
             return _batch_df(list(tickers), session_date, {t: 100.0 for t in tickers})
         mock_yf.download = mock_download
         failures = p.prime(tickers, session_date, "close")
@@ -252,7 +249,7 @@ def test_prime_returns_failures_for_failed_symbols(tmp_path: Path) -> None:
     session_date = date(2026, 10, 16)
     p = _provider(tmp_path, now=now, sleeps=sleeps, chunk_size=10)
     with patch("stockmanager.adapters.yfinance_provider.yf") as mock_yf:
-        def mock_download(tickers, *args, **kwargs):
+        def mock_download(tickers: Any, *args: Any, **kwargs: Any) -> Any:
             # Only AAPL succeeds — MSFT not in frame
             data = {("AAPL", "Close"): [150.0], ("AAPL", "Open"): [149.0]}
             idx = pd.DatetimeIndex([datetime.combine(session_date, pd.Timestamp("2000-01-01").time())])
@@ -424,7 +421,7 @@ def test_prime_retries_failed_symbols(tmp_path: Path) -> None:
     call_count = 0
 
     with patch("stockmanager.adapters.yfinance_provider.yf") as mock_yf:
-        def mock_download(tickers, *args, **kwargs):
+        def mock_download(tickers: Any, *args: Any, **kwargs: Any) -> Any:
             # Only AAPL fails in batch; MSFT succeeds
             data = {
                 ("AAPL", "Close"): [None],
@@ -436,7 +433,7 @@ def test_prime_retries_failed_symbols(tmp_path: Path) -> None:
             return pd.DataFrame(data, index=idx)
         mock_yf.download = mock_download
 
-        def mock_history(*args, **kwargs):
+        def mock_history(*args: Any, **kwargs: Any) -> Any:
             nonlocal call_count
             call_count += 1
             if call_count <= 1:
@@ -466,7 +463,7 @@ def test_regular_close_returns_1600_et() -> None:
 
 # ── cross-check warning ─────────────────────────────────────────────────────
 
-def test_cross_check_warns_on_large_disagreement(tmp_path: Path, caplog) -> None:
+def test_cross_check_warns_on_large_disagreement(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     now = _now()
     p = _provider(tmp_path, now=now)
     with patch("stockmanager.adapters.yfinance_provider.yf") as mock_yf:

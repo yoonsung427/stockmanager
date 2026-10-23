@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
-from datetime import datetime
+from collections.abc import AsyncIterator, Sequence
+from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
 from unittest.mock import AsyncMock, MagicMock
@@ -36,6 +36,11 @@ class FakePriceProvider:
 
     def get_price(self, ticker: str, session_date: object, kind: object) -> PriceQuote:  # pragma: no cover - unused
         raise NotImplementedError
+
+    def prime(  # pragma: no cover - unused
+        self, tickers: Sequence[str], session_date: date, kind: Literal["open", "close"]
+    ) -> dict[str, Exception]:
+        return {}
 
 
 class FakeDeliveryChannel:

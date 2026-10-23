@@ -53,7 +53,7 @@ Outcome = Literal[
 #: At most this many minor divergences are logged and tolerated; more than this halts.
 MAX_MINOR_DIVERGENCES = 3
 #: A share-count difference up to this size is "minor"; anything else is critical.
-MINOR_SHARE_DELTA = Decimal("1")
+MINOR_SHARE_DELTA = Decimal(1)
 _MINOR_RE = re.compile(r"^[^:]+: shares stored (?P<stored>\d+\.\d+), derived (?P<derived>\d+\.\d+)$")
 
 _log = logging.getLogger(__name__)
