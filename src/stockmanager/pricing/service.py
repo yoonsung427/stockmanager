@@ -16,7 +16,11 @@ log = logging.getLogger(__name__)
 
 
 class PriceService:
-    """Primary-then-fallback pricing. Stateless: the providers are passed per call."""
+    """Primary-then-fallback pricing. Stateless: the providers are passed per call.
+
+    A source whose quotes are all fresh always wins; stale quotes (``PriceQuote.stale``) are used only when no
+    source can price everything fresh, and then from a single source.
+    """
 
     def valuation(
         self, tickers: Sequence[str], session_date: date, primary: PriceProvider, fallback: PriceProvider
@@ -60,12 +64,21 @@ class PriceService:
         fallback: PriceProvider,
     ) -> dict[str, PriceQuote]:
         failures: dict[str, Exception] = {}
+        stale_result: dict[str, PriceQuote] | None = None  # first source that priced everything, but not all fresh
         for provider in (primary, fallback):
             try:
-                return _price_all(provider, tickers, session_date, kind)
+                quotes = _price_all(provider, tickers, session_date, kind)
             except PriceError as e:
                 failures[provider.name] = e
                 log.warning("%s could not price %s for %s: %s", provider.name, kind, session_date, e)
+                continue
+            if not any(q.stale for q in quotes.values()):
+                return quotes
+            log.warning("%s priced %s for %s with stale quotes; trying the next source", provider.name, kind, session_date)
+            if stale_result is None:
+                stale_result = quotes
+        if stale_result is not None:
+            return stale_result  # a whole stale source still beats failing closed; never mixed with another source
         raise ValuationUnavailable(failures)
 
 

@@ -22,8 +22,13 @@ class Fake:
     """Scripted provider: ``prices`` per ticker, ``fail`` maps ticker -> error kind."""
 
     def __init__(
-        self, name: Literal["yahoo", "finnhub"], prices: dict[str, str], fail: dict[str, PriceErrorKind] | None = None
+        self,
+        name: Literal["yahoo", "finnhub"],
+        prices: dict[str, str],
+        fail: dict[str, PriceErrorKind] | None = None,
+        stale: set[str] | None = None,
     ) -> None:
+        self.stale = stale or set()
         self.name = name
         self.prices = prices
         self.fail = fail or {}
@@ -33,7 +38,9 @@ class Fake:
         self.calls.append((ticker, kind))
         if ticker in self.fail:
             raise PriceError(self.fail[ticker], ticker)
-        return PriceQuote(ticker, session_date, kind, Decimal(self.prices[ticker]), self.name, NOW)
+        return PriceQuote(
+            ticker, session_date, kind, Decimal(self.prices[ticker]), self.name, NOW, stale=ticker in self.stale
+        )
 
     def prime(self, tickers: Sequence[str], session_date: date, kind: Kind) -> dict[str, Exception]:
         return {}
@@ -99,6 +106,32 @@ def test_fill_prices_all_or_nothing_across_groups() -> None:
     y, f = Fake("yahoo", PRICES, {"SPY": "timeout"}), Fake("finnhub", PRICES, {"SPY": "timeout"})
     with pytest.raises(ValuationUnavailable):
         PriceService().fill_prices([["AAPL"], ["SPY"]], D, y, f)
+
+
+def test_fresh_fallback_preferred_over_stale_primary() -> None:
+    y, f = Fake("yahoo", PRICES, stale={"MSFT"}), Fake("finnhub", PRICES)
+    table = PriceService().valuation(["AAPL", "MSFT"], D, y, f)
+    assert table.source == "finnhub"
+    assert not any(q.stale for q in table.quotes.values())
+
+
+def test_stale_primary_used_when_fallback_fails() -> None:
+    y, f = Fake("yahoo", PRICES, stale={"MSFT"}), Fake("finnhub", PRICES, {"AAPL": "timeout"})
+    table = PriceService().valuation(["AAPL", "MSFT"], D, y, f)
+    assert table.source == "yahoo"
+    assert table.quotes["MSFT"].stale and not table.quotes["AAPL"].stale
+
+
+def test_stale_primary_kept_when_fallback_also_stale() -> None:
+    y, f = Fake("yahoo", PRICES, stale={"AAPL"}), Fake("finnhub", PRICES, stale={"AAPL"})
+    table = PriceService().valuation(["AAPL"], D, y, f)
+    assert table.source == "yahoo" and table.quotes["AAPL"].stale
+
+
+def test_stale_fill_prices_prefer_fresh_fallback_per_group() -> None:
+    y, f = Fake("yahoo", PRICES, stale={"SPY"}), Fake("finnhub", PRICES)
+    fills = PriceService().fill_prices([["AAPL"], ["SPY"]], D, y, f)
+    assert fills["AAPL"].source == "yahoo" and fills["SPY"].source == "finnhub"
 
 
 def test_fill_prices_rejects_ticker_in_two_groups() -> None:
