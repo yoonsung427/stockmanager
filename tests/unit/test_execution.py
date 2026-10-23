@@ -79,6 +79,12 @@ def live_portfolio(cash: str = "10000", positions: object = None) -> PortfolioDo
     return make_portfolio(trades=[], start_cash=cash, status="LIVE")
 
 
+def assert_dashboard_written(store: FileStore) -> None:
+    """Regression: every successful run writes ``dashboard/portfolio.{html,json}`` (the call was once mis-signed)."""
+    for name in ("portfolio.html", "portfolio.json"):
+        assert (store.root / "dashboard" / name).stat().st_size > 0
+
+
 def _advance(doc: ProposalDoc, to_state: ProposalState, actor: str, cause: str, at: datetime) -> ProposalDoc:
     prev = doc.transitions[-1]
     rec = TransitionRecord(
@@ -121,6 +127,7 @@ def test_run_opening_fills_staged_picks_and_goes_live(store: FileStore, clock: F
     assert out.cash == Decimal(5000)
     assert len(out.trades) == 1
     assert len(list((store.root / "alerts" / "pending").glob("*.json"))) == 1
+    assert_dashboard_written(store)
 
 
 def test_run_opening_is_all_or_nothing_on_unpriceable_ticker(store: FileStore, clock: FixedClock) -> None:
@@ -176,6 +183,7 @@ def test_run_proposal_fills_legs_writes_trades_and_executes(store: FileStore, cl
     assert doc.cash == Decimal(10000) - Decimal(1000)  # buy1 is target_value 1000 at price 200 -> 5 shares
     assert '"state": "EXECUTED"' in store.proposal_path(p.proposal_id).read_text()
     assert len(store.trades_log_path.read_text().splitlines()) == 1
+    assert_dashboard_written(store)
 
 
 def test_run_proposal_no_op_outside_execution_window(store: FileStore, clock: FixedClock) -> None:
@@ -280,6 +288,7 @@ def test_run_final_valuation_closes_without_selling_positions(store: FileStore, 
     assert alert["fields"]["benchmark_relative"].startswith("+33.3333% vs SPY +0.0000%")
     assert alert["fields"]["best_worst"] == "Best: AAPL +50.0000%, Worst: AAPL +50.0000%"
     assert alert["fields"]["trade_summary"] == "1 trades: 1 buys, 0 sells"
+    assert_dashboard_written(store)
 
 
 def test_run_final_valuation_fails_closed_on_price_failure(store: FileStore, clock: FixedClock) -> None:

@@ -276,8 +276,7 @@ class ExecutionEngine:
         # Build and write dashboard post-commit so it captures the updated state.
         try:
             model = build_dashboard(self._store, self._clock)
-            html = render_dashboard(model)
-            write_dashboard(self._store, model, html)
+            write_dashboard(model, self._store.root, render_dashboard, {})
         except Exception:
             logging.getLogger(__name__).exception("Dashboard build failed")
         return RunResult("completed")
@@ -444,8 +443,7 @@ class ExecutionEngine:
         # Build and write dashboard post-commit.
         try:
             model = build_dashboard(self._store, self._clock)
-            html = render_dashboard(model)
-            write_dashboard(self._store, model, html)
+            write_dashboard(model, self._store.root, render_dashboard, {})
         except Exception:
             logging.getLogger(__name__).exception("Dashboard build failed")
         return RunResult("completed")
@@ -566,8 +564,7 @@ class ExecutionEngine:
         # Build and write dashboard post-commit.
         try:
             model = build_dashboard(self._store, self._clock)
-            html = render_dashboard(model)
-            write_dashboard(self._store, model, html)
+            write_dashboard(model, self._store.root, render_dashboard, {})
         except Exception:
             logging.getLogger(__name__).exception("Dashboard build failed")
         return RunResult("completed")
