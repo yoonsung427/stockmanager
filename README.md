@@ -4,6 +4,8 @@
 
 ![tests](https://img.shields.io/badge/tests-1215%20passing-brightgreen) ![coverage](https://img.shields.io/badge/coverage-93%25-brightgreen) ![ruff](https://img.shields.io/badge/ruff-clean-brightgreen) ![mypy](https://img.shields.io/badge/mypy-strict-blue) ![python](https://img.shields.io/badge/python-3.12%2B-blue)
 
+> **⚠️ Disclaimer.** This project is a **research and simulation tool only**. It does not connect to any brokerage, does not execute real trades, and is not intended for use as financial advice. All fills are simulated against historical or session prices. The LLM reasoning component is experimental and may produce incorrect or misleading output. Use at your own risk — the author provides no warranty and accepts no liability for financial losses, data inaccuracies, or any damages resulting from the use of this software.
+
 ## What it does
 
 A semi-autonomous **mock** portfolio manager. No real money and no brokerage: every fill is simulated against real session prices.
