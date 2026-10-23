@@ -16,13 +16,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from stockmanager.adapters.yahoo import SETTLE
 from stockmanager.config.model import Config
 from stockmanager.domain.docs import ProposalDoc, Status
+from stockmanager.jobs.common import NY, TradingCalendar
 from stockmanager.scheduler.slots import latest_slot
 from stockmanager.scheduler.state import SchedulerState
 
 DEFAULT_EXEC_DELAY_MINUTES = 5
 DEFAULT_LATE_THRESHOLD_MINUTES = 10
+#: The price check runs 15 minutes after the open (09:45 ET on a regular day).
+PRICE_CHECK_DELAY = timedelta(minutes=15)
+#: The digest runs once the close has settled (``SETTLE`` after 16:00 ET): Yahoo will not serve the close before that.
+#: It is retried every tick until it succeeds, but only until this long after it first became due.
+DIGEST_DELAY = SETTLE
+DIGEST_RETRY_WINDOW = timedelta(hours=3)
 
 
 @dataclass(frozen=True)
@@ -80,8 +88,13 @@ def list_due_jobs(
     *,
     exec_delay_minutes: int = DEFAULT_EXEC_DELAY_MINUTES,
     late_threshold_minutes: int = DEFAULT_LATE_THRESHOLD_MINUTES,
+    calendar: TradingCalendar | None = None,
 ) -> list[DueJob]:
-    """Jobs due *now* (AS §1.5 table). Execution jobs first, then evaluation, matching the tick's dispatch order."""
+    """Jobs due *now* (AS §1.5 table). Execution jobs first, then evaluation, matching the tick's dispatch order.
+
+    With a ``calendar`` and ``cfg.summary.enabled`` a ``LIVE`` portfolio also gets the ``price_check`` and
+    ``digest`` jobs (see ``_summary_jobs``); without one, no summary job is ever due.
+    """
     jobs: list[DueJob] = []
     if status == "LIVE":
         jobs.extend(_execution_jobs(now, proposals, exec_delay_minutes))
@@ -92,6 +105,40 @@ def list_due_jobs(
             jobs.append(DueJob("evaluation", slot, None))
     if status == "APPROVED":
         jobs.append(DueJob("opening", None, None))
+    if status == "LIVE" and calendar is not None:
+        jobs.extend(_summary_jobs(now, cfg, scheduler_state, calendar))
+    return jobs
+
+
+def _summary_jobs(now: datetime, cfg: Config, scheduler_state: SchedulerState, calendar: TradingCalendar) -> list[DueJob]:
+    """``price_check`` (open + 15 min, until the close) and ``digest`` (close + settle, until the retry window ends).
+
+    Both are keyed by the New York date, run on trading days only, and run once per day (``scheduler_state``). The
+    digest also rolls ``last_close.json`` forward, so it is due whenever either summary feature is on.
+    """
+    if not cfg.summary.enabled:
+        return []
+    day = now.astimezone(NY).date()
+    try:
+        if not calendar.is_session(day):
+            return []
+        opens, closes = calendar.session_open(day), calendar.session_close(day)
+    except ValueError:  # outside the calendar's coverage: fail closed, like every other calendar user
+        return []
+    jobs: list[DueJob] = []
+    if (
+        cfg.summary.alert_on_threshold
+        and day not in scheduler_state.price_check_days
+        and opens + PRICE_CHECK_DELAY <= now < closes
+    ):
+        jobs.append(DueJob("price_check", None))
+    due_at = closes + DIGEST_DELAY
+    if (
+        (cfg.summary.digest_at_close or cfg.summary.alert_on_threshold)
+        and day not in scheduler_state.digest_days
+        and due_at <= now < due_at + DIGEST_RETRY_WINDOW
+    ):
+        jobs.append(DueJob("digest", None))
     return jobs
 
 

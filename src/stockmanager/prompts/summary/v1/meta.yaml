@@ -1,0 +1,7 @@
+schema_version: 1
+prompt: summary
+version: v1
+target_model: Qwen3.6-27B-Q3_K_M
+files:
+  system.md: "49c22115492cc371a3ef9bfa5f6739419310c04376aec279d38d0fb074305cd6"
+  user.md.j2: "319dd9adf1bfc9a3dc61add15c4fbf219bf5a9cdbd8e1de64f30bcc976e9fd06"

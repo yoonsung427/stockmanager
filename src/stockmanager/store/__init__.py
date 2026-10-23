@@ -175,6 +175,7 @@ class FileStore:
         run_notes: Mapping[str, str] | None = None,
         dashboard: Mapping[str, str] | None = None,
         alerts: Mapping[str, str] | None = None,
+        state: Mapping[str, str] | None = None,
     ) -> None:
         """Write the secondary files; each mapping is relative file name -> text, replaced tmp -> rename.
 
@@ -186,6 +187,7 @@ class FileStore:
             ("run-notes", run_notes),
             ("dashboard", dashboard),
             ("alerts/pending", alerts),
+            ("state", state),
         ):
             for name, text in (files or {}).items():
                 fsutil.atomic_write_text(self._child(directory, name), text)

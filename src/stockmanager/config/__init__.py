@@ -4,5 +4,6 @@ from __future__ import annotations
 
 from stockmanager.config.model import BLOCKED_SET_PREFIXES, SETTABLE_KEYS, Config, DiscordConfig, OpsConfig
 from stockmanager.config.reload import reload
+from stockmanager.config.summary import SummaryConfig
 
-__all__ = ["BLOCKED_SET_PREFIXES", "SETTABLE_KEYS", "Config", "DiscordConfig", "OpsConfig", "reload"]
+__all__ = ["BLOCKED_SET_PREFIXES", "SETTABLE_KEYS", "Config", "DiscordConfig", "OpsConfig", "SummaryConfig", "reload"]

@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "docs/user-manual.md",
+                "file": "docs/project-postmortem.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "user-manual"
+              "title": "project-postmortem"
             }
           }
         ]
@@ -190,19 +190,21 @@
   },
   "active": "bc75abec0ab13fda",
   "lastOpenFiles": [
-    "tests/unit/__pycache__/test_yfinance_provider.cpython-314-pytest-9.1.1.pyc",
-    "tests/unit/test_yfinance_provider.py",
     "workspace/state/scheduler.json.tmp",
-    "import_positions_from_csv.py",
-    "workspace/yahoo_prices.json",
+    "scripts/pre-commit-hook.sh",
+    "tests/unit/__pycache__/test_import_rules.cpython-314.pyc",
+    "tests/unit/__pycache__/test_import_rules.cpython-314-pytest-9.1.1.pyc",
+    "tests/unit/test_import_rules.py",
+    "tests/architecture",
+    "docs/coverage-baseline.md",
     "workspace/state/bot_heartbeat.json.tmp",
-    "src/stockmanager/adapters/__pycache__/yfinance_provider.cpython-314.pyc",
-    "src/stockmanager/adapters/yfinance_provider.py",
-    "workspace/portfolio.lock",
-    "workspace/dashboard/portfolio.json",
-    "workspace/dashboard/portfolio.html",
-    "llm-prompts.md",
+    "tests/unit/__pycache__/test_calendar.cpython-314-pytest-9.1.1.pyc",
+    "tests/unit/test_calendar.py",
+    "scripts/gen_calendar.py",
     "docs/user-manual.md",
+    "docs/project-postmortem.md",
+    "workspace/portfolio.lock",
+    "llm-prompts.md",
     "workspace/run-notes/20261020T152533-logrepair-evaluation-precheck.md",
     "CLAUDE.md",
     "stockmanager-handoff.md",

@@ -15,6 +15,7 @@ import stat
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from functools import partial
 from pathlib import Path
 
 import yaml
@@ -24,6 +25,7 @@ from stockmanager.adapters.calendar import JsonCalendar
 from stockmanager.adapters.discord_rest import DiscordRESTChannel
 from stockmanager.adapters.finnhub import FinnhubPriceProvider
 from stockmanager.adapters.symbol_verifier import YahooSymbolVerifier
+from stockmanager.adapters.yfinance_lookup import search_symbols
 from stockmanager.adapters.yfinance_provider import YfinancePriceProvider, regular_close
 from stockmanager.commands import CommandContext
 from stockmanager.config.model import Config
@@ -35,7 +37,13 @@ from stockmanager.evaluation.reasoner import Reasoner, build_reasoner
 from stockmanager.evaluation.reconfirm import ReconfirmEngine
 from stockmanager.evaluation.thesis_checker import ThesisReview
 from stockmanager.execution.engine import ExecutionEngine
+from stockmanager.jobs.common import make_news_lookup
+from stockmanager.jobs.digest import run_digest
+from stockmanager.jobs.price_check import run_price_check
+from stockmanager.jobs.stock_query import StockQuery
 from stockmanager.llm.anthropic import AnthropicLLMBackend
+from stockmanager.llm.openai_compat import OpenAILLMBackend
+from stockmanager.llm.summary import generate_summary
 from stockmanager.news import NewsResult
 from stockmanager.news.config import NewsConfig
 from stockmanager.news.extract import Extractor, build_extractor
@@ -45,6 +53,7 @@ from stockmanager.news.fetchers.yahoo_rss import YahooRssFetcher
 from stockmanager.news.pipeline import run_news_stage
 from stockmanager.notify.deliver import Channel
 from stockmanager.notify.templates import use_catalogue
+from stockmanager.scheduler.tick import SummaryJobs
 from stockmanager.store import FileStore
 from stockmanager.store.lock import Clock, now_pt
 
@@ -147,6 +156,8 @@ class AppContext:
     notify_channels: list[Channel] = field(default_factory=list)
     discord_bot_token: str | None = None
     discord_channel_id: int | None = None
+    summary_jobs: SummaryJobs | None = None
+    stock_query: StockQuery | None = None
 
     def run_news_stage(self, cycle_id: str, portfolio: PortfolioDoc) -> NewsResult:
         """``NewsRunner`` (AS §7): run the whole news stage for one cycle against ``portfolio``."""
@@ -219,6 +230,36 @@ def create_app(workspace_path: str | Path, config_path: str | Path | None = None
     if discord_bot_token and discord_channel_id:
         notify_channels.append(DiscordRESTChannel(discord_bot_token, discord_channel_id, clock=clock))  # type: ignore[arg-type]
 
+    # AI summaries run on the local llama.cpp server through its OpenAI-compatible API, never on the Anthropic backend.
+    # It needs no real key (the openai client just wants a non-empty one) and the Anthropic key is not involved.
+    summary_backend = OpenAILLMBackend(cfg.summary.base_url, timeout=float(cfg.summary.timeout_s), max_retries=1)
+    summary_gen = partial(generate_summary, config=cfg.summary, backend=summary_backend)
+    news_lookup = make_news_lookup(news_fetchers, news_config)  # type: ignore[arg-type]
+    summary_jobs = SummaryJobs(
+        calendar=calendar,
+        digest=lambda: run_digest(
+            store,
+            cfg,
+            summary_gen,
+            notify_channels,
+            clock,
+            price_provider=price_primary,
+            price_fallback=price_fallback,
+            news_lookup=news_lookup,
+        ),
+        price_check=lambda: run_price_check(
+            store,
+            cfg,
+            price_primary,
+            summary_gen,
+            notify_channels,
+            clock,
+            price_fallback=price_fallback,
+            news_lookup=news_lookup,
+        ),
+    )
+    stock_query = StockQuery(command_ctx, calendar, news_lookup, summary_gen, search_symbols)
+
     app_ctx = AppContext(
         workspace=workspace,
         store=store,
@@ -241,6 +282,8 @@ def create_app(workspace_path: str | Path, config_path: str | Path | None = None
         notify_channels=notify_channels,
         discord_bot_token=discord_bot_token,
         discord_channel_id=discord_channel_id,
+        summary_jobs=summary_jobs,
+        stock_query=stock_query,
     )
     app_ctx.evaluation = EvaluationEngine(
         store,

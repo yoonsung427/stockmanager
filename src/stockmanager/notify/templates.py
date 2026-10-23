@@ -85,6 +85,8 @@ DEFAULTS: dict[str, tuple[Severity, str, str]] = {
             "Benchmark: {benchmark_relative}. {best_worst}. {trade_summary}. Positions were not sold."
         ),
     ),
+    "summary_alert": ("info", "Summary: {ticker}", "{summary}"),
+    "daily_digest": ("info", "Daily digest", "{summary}"),
 }
 
 _overrides: dict[str, NotificationTemplate] = {}
@@ -370,4 +372,35 @@ def final_report(
             "trade_summary": trade_summary or "",
         },
         dedupe_key="final_report",
+    )
+
+
+#: Discord caps an embed description at 4096 characters (``notify.deliver``); keep a digest under it with room to spare.
+DIGEST_MAX_CHARS = 4000
+
+
+def summary_alert(
+    ticker: str, summary_text: str, *, severity: Severity | None = None, dedupe_key: str | None = None
+) -> Alert:
+    """An AI-written summary for one holding (price-threshold alert, or a one-ticker digest)."""
+    return render(
+        "summary_alert",
+        severity=severity,
+        ticker=ticker,
+        summary=summary_text,
+        fields={"ticker": ticker},
+        dedupe_key=dedupe_key if dedupe_key is not None else f"summary:{ticker}",
+    )
+
+
+def digest_alert(summaries: list[str]) -> Alert:
+    """The end-of-day digest: every per-holding summary in one message, separated by blank lines."""
+    text = "\n\n".join(summaries)
+    if len(text) > DIGEST_MAX_CHARS:
+        text = text[: DIGEST_MAX_CHARS - 1].rstrip() + "…"
+    return render(
+        "daily_digest",
+        summary=text,
+        fields={"holdings": str(len(summaries))},
+        dedupe_key=None,
     )

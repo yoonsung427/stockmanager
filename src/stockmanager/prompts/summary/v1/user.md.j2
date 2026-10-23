@@ -1,0 +1,33 @@
+Session date: {{ session_date }}
+Ticker: {{ ticker }}
+
+<position>
+Shares held: {{ position.shares }}
+Average cost per share: {{ position.avg_cost }}
+Total cost basis: {{ position.cost_basis }}
+{% if position.price is not none -%}
+Last price: {{ position.price }} (as of {{ position.price_date }})
+Market value: {{ position.market_value }}
+Unrealised P&L: {{ position.pnl }} ({{ position.pnl_pct }}%)
+{% else -%}
+Last price: unavailable
+{% endif -%}
+{% if position.day_change_pct is not none -%}
+Move vs previous close: {{ position.day_change_pct }}%
+{% endif -%}
+{% if position.thesis -%}
+Why we hold it: {{ position.thesis }}
+{% endif -%}
+</position>
+
+<news>
+{% for item in news -%}
+[{{ loop.index }}] {{ item.published or "undated" }} | {{ item.source }} | {{ item.title }}
+{% if item.snippet %}{{ item.snippet }}
+{% endif -%}
+{% else -%}
+(no recent news found)
+{% endfor -%}
+</news>
+
+Write the summary for {{ ticker }}.

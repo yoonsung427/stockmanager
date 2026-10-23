@@ -88,6 +88,7 @@ def cmd_tick(args: argparse.Namespace) -> int:
             evaluation=ctx.evaluation,
             reconfirm=ctx.reconfirm,
             channels=ctx.notify_channels,
+            summary=ctx.summary_jobs,
         )
     print(f"tick: {'ok' if result == 0 else 'error'}")
     return result
@@ -208,7 +209,14 @@ def cmd_bot(args: argparse.Namespace) -> int:
         return 1
     from stockmanager.bot.bot import PortfolioBot
 
-    bot = PortfolioBot(ctx.store, ctx.discord_channel_id, ctx.command_ctx, ctx.notify_channels, clock=ctx.clock)
+    bot = PortfolioBot(
+        ctx.store,
+        ctx.discord_channel_id,
+        ctx.command_ctx,
+        ctx.notify_channels,
+        clock=ctx.clock,
+        stock_query=ctx.stock_query,
+    )
     bot.run(ctx.discord_bot_token)
     return 0
 

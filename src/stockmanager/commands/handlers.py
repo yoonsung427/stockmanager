@@ -41,6 +41,10 @@ MAX_MESSAGE_CHARS = 2000
 CLOSE_CONFIRM_WINDOW = timedelta(minutes=10)
 
 
+#: The reply ``handle`` gives text that is not a command; the Discord bot tries stock queries on exactly this.
+UNRECOGNIZED = "❌ Unrecognized command"
+
+
 @dataclass
 class CommandContext:
     """What a handler needs to act: the store, the live config, time, and the price/calendar seams."""
@@ -60,7 +64,7 @@ def handle(text: str, sender: Sender, ctx: CommandContext) -> str:
         return "❌ Message too long"
     parsed = parse_command(normalized)
     if parsed is None:
-        return "❌ Unrecognized command"
+        return UNRECOGNIZED
     auth = authorize(sender, parsed, ctx.cfg)
     if not auth.ok:
         return f"❌ {auth.reason}"
@@ -86,7 +90,7 @@ def handle(text: str, sender: Sender, ctx: CommandContext) -> str:
         return cmd_status(ctx, sender)
     if parsed.verb == "SET":
         return cmd_set(ctx, parsed.target, parsed.reason, sender)
-    return "❌ Unrecognized command"  # pragma: no cover - parse_command only yields the verbs handled above
+    return UNRECOGNIZED  # pragma: no cover - parse_command only yields the verbs handled above
 
 
 # -- shared helpers ---------------------------------------------------------------------------------------------

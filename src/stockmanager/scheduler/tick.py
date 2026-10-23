@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import fcntl
+import logging
 import os
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,10 +17,12 @@ from stockmanager.config.model import Config
 from stockmanager.config.reload import reload as reload_config
 from stockmanager.domain.docs import ProposalDoc
 from stockmanager.execution.engine import ExecutionEngine
+from stockmanager.jobs.common import NY, TradingCalendar
 from stockmanager.notify.deliver import Channel, deliver_pending
 from stockmanager.notify.templates import use_catalogue
 from stockmanager.scheduler import state as scheduler_state_mod
 from stockmanager.scheduler.scheduler import list_due_jobs
+from stockmanager.scheduler.state import SchedulerState
 from stockmanager.scheduler.sweeper import sweep
 from stockmanager.store import FileStore
 from stockmanager.store.lock import Clock
@@ -26,9 +31,24 @@ if TYPE_CHECKING:
     from stockmanager.evaluation.engine import EvaluationEngine
     from stockmanager.evaluation.reconfirm import ReconfirmEngine
 
+log = logging.getLogger(__name__)
+
 TICK_LOCK_NAME = "tick.lock"
 OUTBOX_BUDGET_S = 20.0  # AS §1.5: notify.deliver_pending(budget=20 s)
 MAX_RUNTIME_S = 20 * 60.0  # AS §1.5: watchdog max_runtime 20 min
+
+
+@dataclass(frozen=True)
+class SummaryJobs:
+    """What the tick needs to run the AI-summary jobs: the calendar that dates them and the two job bodies.
+
+    ``digest`` and ``price_check`` are built by the composition root with every dependency already bound. A job
+    that raises stays due and is retried on the next tick; one that returns is marked done for the day.
+    """
+
+    calendar: TradingCalendar
+    digest: Callable[[], list[str]]
+    price_check: Callable[[], list[str]]
 
 
 class TickTimeout(Exception):
@@ -97,6 +117,7 @@ def tick(
     evaluation: EvaluationEngine | None = None,
     reconfirm: ReconfirmEngine | None = None,
     channels: Sequence[Channel] = (),
+    summary: SummaryJobs | None = None,
     max_runtime: float = MAX_RUNTIME_S,
 ) -> int:
     """Run one tick (AS §1.5). Single-flight on ``state/tick.lock``; returns 0 (handled) or 1 (unhandled error).
@@ -117,6 +138,7 @@ def tick(
             evaluation=evaluation,
             reconfirm=reconfirm,
             channels=channels,
+            summary=summary,
             max_runtime=max_runtime,
         )
 
@@ -130,14 +152,31 @@ def run_locked(
     evaluation: EvaluationEngine | None = None,
     reconfirm: ReconfirmEngine | None = None,
     channels: Sequence[Channel] = (),
+    summary: SummaryJobs | None = None,
     max_runtime: float = MAX_RUNTIME_S,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> int:
     """The tick body, for a caller that already holds ``tick_lock``. Never raises; returns 0 or 1 (AS §10)."""
     try:
-        return _run(clock, store, cfg, execution, evaluation, reconfirm, channels, Watchdog(max_runtime, monotonic))
+        return _run(
+            clock, store, cfg, execution, evaluation, reconfirm, channels, Watchdog(max_runtime, monotonic), summary
+        )
     except Exception:  # noqa: BLE001 - top-level catch (incl. TickTimeout): the tick always exits cleanly (AS §10)
         return 1
+
+
+def _run_summary_job(kind: str, summary: SummaryJobs, scheduler_state: SchedulerState, now: datetime) -> SchedulerState:
+    """Run one summary job. Never raises: a failure leaves the job due for the next tick and spares the other jobs."""
+    day = now.astimezone(NY).date()
+    try:
+        if kind == "digest":
+            summary.digest()
+            return scheduler_state.with_digest_done(day)
+        summary.price_check()
+        return scheduler_state.with_price_check_done(day)
+    except Exception:
+        log.exception("summary job %s failed; it stays due", kind)
+        return scheduler_state
 
 
 def _run(
@@ -149,6 +188,7 @@ def _run(
     reconfirm: ReconfirmEngine | None,
     channels: Sequence[Channel],
     watchdog: Watchdog,
+    summary: SummaryJobs | None = None,
 ) -> int:
     now = clock()
     # Heartbeat first: a long evaluation must not look like a dead scheduler to the bot's stall check (AS §10.1).
@@ -173,7 +213,9 @@ def _run(
 
     try:
         if portfolio.status in ("LIVE", "PAUSED"):
-            for job in list_due_jobs(now, cfg, portfolio.status, proposals, scheduler_state):
+            for job in list_due_jobs(
+                now, cfg, portfolio.status, proposals, scheduler_state, calendar=summary.calendar if summary else None
+            ):
                 watchdog.check(f"job:{job.kind}")
                 if job.kind == "execution" and job.proposal_id is not None and portfolio.status == "LIVE":
                     if execution is not None:
@@ -181,6 +223,8 @@ def _run(
                 elif job.kind == "reconfirm" and job.proposal_id is not None and portfolio.status == "LIVE":
                     if reconfirm is not None:
                         reconfirm.run(job.proposal_id, cfg)  # not-passed outcomes stay pending/ended; see its docs
+                elif job.kind in ("digest", "price_check") and summary is not None:
+                    scheduler_state = _run_summary_job(job.kind, summary, scheduler_state, now)
                 elif job.kind == "evaluation" and job.slot is not None:
                     if portfolio.status == "LIVE":
                         if evaluation is None:

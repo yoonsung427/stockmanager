@@ -1,0 +1,20 @@
+"""The ``summary.*`` settings: AI stock summaries (digest, price-threshold alert, Discord query). File-edit only."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class SummaryConfig(BaseModel):
+    """Settings for the summary generator, which talks to an OpenAI-compatible server (llama.cpp), not Anthropic."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    digest_at_close: bool = True
+    alert_on_threshold: bool = True
+    price_threshold_pct: float = Field(default=5.0, gt=0, le=100)
+    model: str = "Qwen3.6-27B-Q3_K_M"
+    base_url: str = "http://llm.paelab.com:8080/v1"
+    max_tokens: int = Field(default=2000, ge=1)
+    timeout_s: int = Field(default=60, ge=1)

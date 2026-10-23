@@ -11,13 +11,14 @@ import asyncio
 import json
 import logging
 from collections import defaultdict, deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import discord
 
 from stockmanager.commands import CommandContext, Sender, handle
+from stockmanager.commands.handlers import UNRECOGNIZED
 from stockmanager.notify import enqueue, rejected_control_message
 from stockmanager.notify.deliver import Channel, deliver_pending
 from stockmanager.store import FileStore, fsutil
@@ -50,6 +51,7 @@ class PortfolioBot(discord.Client):
         channels: Sequence[Channel],
         *,
         clock: Clock = now_pt,
+        stock_query: Callable[[str, str], str | None] | None = None,
         **kwargs: object,
     ) -> None:
         intents = discord.Intents.default()
@@ -63,6 +65,7 @@ class PortfolioBot(discord.Client):
         self._ctx = ctx
         self._channels = list(channels)
         self._clock = clock
+        self._stock_query = stock_query
         self._recent_commands: dict[str, deque[datetime]] = defaultdict(deque)
         self._last_rejected_alert: dict[str, datetime] = {}
         self._outbox_task: asyncio.Task[None] | None = None
@@ -131,7 +134,14 @@ class PortfolioBot(discord.Client):
             await self._reply(message, "❌ Rate limited: too many commands, try again in a minute.")
             return
         reply = await asyncio.to_thread(handle, message.content, sender, self._ctx)
-        if reply.startswith("❌") and self._should_alert_rejection(key, now):
+        answered = False
+        if reply == UNRECOGNIZED and self._stock_query is not None:
+            # "what's going on with MSFT?": not a command, so try it as a stock query. It does the work (an LLM
+            # call) off the event loop and owns authorization; ``None`` keeps the rejection above.
+            stock_reply = await asyncio.to_thread(self._stock_query, message.content, key)
+            if stock_reply is not None:
+                reply, answered = stock_reply, True
+        if not answered and reply.startswith("❌") and self._should_alert_rejection(key, now):
             await asyncio.to_thread(enqueue, rejected_control_message(key), self._store)
         await self._reply(message, reply)
         self._write_cursor(_channel_key(message), message.id)

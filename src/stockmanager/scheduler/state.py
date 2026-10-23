@@ -19,12 +19,17 @@ MAX_COMPLETED_SLOTS = 8
 
 @dataclass(frozen=True)
 class SchedulerState:
-    """``{anchor_date, completed_slots[<=8], last_tick, noticed_slots[]}`` (AS §3.10)."""
+    """``{anchor_date, completed_slots[<=8], last_tick, noticed_slots[], digest_days[<=8], price_check_days[<=8]}``.
+
+    The last two are additions to AS §3.10: the ET session dates on which the summary jobs have already run.
+    """
 
     anchor_date: date | None = None
     completed_slots: tuple[date, ...] = field(default_factory=tuple)
     last_tick: datetime | None = None
     noticed_slots: tuple[date, ...] = field(default_factory=tuple)
+    digest_days: tuple[date, ...] = field(default_factory=tuple)
+    price_check_days: tuple[date, ...] = field(default_factory=tuple)
 
     def to_json(self) -> str:
         """Canonical JSON for ``state/scheduler.json``."""
@@ -33,6 +38,8 @@ class SchedulerState:
             "completed_slots": [d.isoformat() for d in self.completed_slots],
             "last_tick": self.last_tick.isoformat() if self.last_tick else None,
             "noticed_slots": [d.isoformat() for d in self.noticed_slots],
+            "digest_days": [d.isoformat() for d in self.digest_days],
+            "price_check_days": [d.isoformat() for d in self.price_check_days],
         }
         return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
 
@@ -45,12 +52,24 @@ class SchedulerState:
             completed_slots=tuple(date.fromisoformat(d) for d in data.get("completed_slots", [])),
             last_tick=datetime.fromisoformat(data["last_tick"]) if data.get("last_tick") else None,
             noticed_slots=tuple(date.fromisoformat(d) for d in data.get("noticed_slots", [])),
+            digest_days=tuple(date.fromisoformat(d) for d in data.get("digest_days", [])),
+            price_check_days=tuple(date.fromisoformat(d) for d in data.get("price_check_days", [])),
         )
 
     def with_completed(self, slot: date) -> SchedulerState:
         """New state with ``slot`` added to ``completed_slots`` (deduped, capped, anchor set on the first one)."""
         slots = tuple(sorted({*self.completed_slots, slot}))[-MAX_COMPLETED_SLOTS:]
         return dataclasses.replace(self, completed_slots=slots, anchor_date=self.anchor_date or slot)
+
+    def with_digest_done(self, day: date) -> SchedulerState:
+        """New state with the daily digest for ``day`` (an ET session date) marked done; capped like ``completed_slots``."""
+        days = tuple(sorted({*self.digest_days, day}))[-MAX_COMPLETED_SLOTS:]
+        return dataclasses.replace(self, digest_days=days)
+
+    def with_price_check_done(self, day: date) -> SchedulerState:
+        """New state with the morning price check for ``day`` (an ET session date) marked done."""
+        days = tuple(sorted({*self.price_check_days, day}))[-MAX_COMPLETED_SLOTS:]
+        return dataclasses.replace(self, price_check_days=days)
 
     def with_noticed(self, slot: date) -> SchedulerState:
         """New state with ``slot`` added to ``noticed_slots`` (deduped)."""

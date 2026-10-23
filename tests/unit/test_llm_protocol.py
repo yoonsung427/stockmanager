@@ -133,7 +133,7 @@ class Completions:
 def oai(outcome: Any) -> tuple[OpenAILLMBackend, Completions]:
     completions = Completions(outcome)
     client = type("C", (), {"chat": type("Chat", (), {"completions": completions})()})()
-    return OpenAILLMBackend("http://localhost:11434/v1", "dummy", client=client), completions
+    return OpenAILLMBackend("http://llm.paelab.com:8080/v1", "dummy", client=client), completions
 
 
 @pytest.mark.parametrize(
@@ -172,7 +172,7 @@ def test_openai_missing_package_degrades(monkeypatch: pytest.MonkeyPatch, caplog
 
     monkeypatch.setattr(importlib, "import_module", missing)
     with caplog.at_level("WARNING"):
-        backend = OpenAILLMBackend("http://localhost:11434/v1")
+        backend = OpenAILLMBackend("http://llm.paelab.com:8080/v1")
     assert "not installed" in caplog.text
     assert backend.chat_completion(**CALL) == ChatResult("", "refusal", UNAVAILABLE_MODEL_ID)
 

@@ -2,3 +2,4 @@ schema_version: 1
 active:
   extractor: v1
   reasoner: v1
+  summary: v1

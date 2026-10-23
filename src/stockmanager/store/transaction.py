@@ -80,6 +80,7 @@ class Transaction:
         self._run_note: RunNote | None = None
         self._dashboard: dict[str, str] = {}
         self._alerts: dict[str, str] = {}
+        self._state_files: dict[str, str] = {}
         self.repaired_log_ids: list[str] = []
 
     # -- lifecycle -----------------------------------------------------------------------------------------------
@@ -207,6 +208,10 @@ class Transaction:
         """Stage dashboard files (name -> text)."""
         self._dashboard.update(bundle)
 
+    def stage_state(self, files: Mapping[str, str]) -> None:
+        """Stage ``state/`` files (name -> text), e.g. ``last_close.json``; replaced tmp -> rename at commit."""
+        self._state_files.update(files)
+
     def stage_alerts(self, alerts: Mapping[str, str]) -> None:
         """Stage alert-outbox files (name -> text) for ``alerts/pending/``.
 
@@ -242,4 +247,5 @@ class Transaction:
         if self._run_note is not None:  # 5
             s.save_extras(run_notes={self._run_note.name: self._run_note.text})
         s.save_extras(dashboard=self._dashboard)  # 6
+        s.save_extras(state=self._state_files)
         s.save_extras(alerts=self._alerts)  # 7

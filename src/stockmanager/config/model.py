@@ -1,7 +1,7 @@
 """The slice of ``config.yaml`` the command layer and Discord bot read (AS §3.6, §11.3).
 
 This is intentionally a subset of the full configuration surface described in the architecture spec: enough to
-drive authorization, ``SET`` and the notification catalogue. ``ops.*``, ``llm.*`` and ``news.*`` stay as their own
+drive authorization, ``SET`` and the notification catalogue. ``ops.*``, ``llm.*``, ``news.*`` and ``summary.*`` stay as their own
 config models (``config/proposals.py``, ``config/llm.py``) and are never reachable through ``SET``.
 """
 
@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from stockmanager.config.llm import LLMConfig
 from stockmanager.config.proposals import ProposalConfig
+from stockmanager.config.summary import SummaryConfig
 
 PriceSource = Literal["yahoo", "finnhub"]
 
@@ -102,6 +103,7 @@ class Config(BaseModel):
     news: NewsOpsConfig = Field(default_factory=NewsOpsConfig)
     proposals: ProposalConfig = Field(default_factory=ProposalConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    summary: SummaryConfig = Field(default_factory=SummaryConfig)
 
 
 # -- SET (AS §3.6 table): every key a Discord/CLI SET command may change -------------------------------------------
@@ -126,4 +128,4 @@ SETTABLE_KEYS: frozenset[str] = frozenset(
 )
 
 # Namespaces that are file-edit only and must never be reachable via SET, even with a dotted key.
-BLOCKED_SET_PREFIXES: tuple[str, ...] = ("ops.", "llm.", "news.", "discord.")
+BLOCKED_SET_PREFIXES: tuple[str, ...] = ("ops.", "llm.", "news.", "discord.", "summary.")
