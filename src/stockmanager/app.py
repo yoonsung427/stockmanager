@@ -12,13 +12,15 @@ from __future__ import annotations
 import os
 import re
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 
 import yaml
 from pydantic import ValidationError
 
-from stockmanager.adapters.calendar import SimpleWeekdayCalendar
+from stockmanager.adapters.calendar import JsonCalendar
 from stockmanager.adapters.discord_rest import DiscordRESTChannel
 from stockmanager.adapters.finnhub import FinnhubPriceProvider
 from stockmanager.adapters.symbol_verifier import YahooSymbolVerifier
@@ -100,11 +102,25 @@ def load_secrets(path: Path | None = None) -> None:
             os.environ.setdefault(m.group(1), m.group(2))
 
 
-def _build_price_provider(name: str, clock: Clock, cache_dir: Path) -> PriceProvider:
+def _session_close_fn(calendar: JsonCalendar) -> Callable[[date], datetime]:
+    """Close instants for the price providers: early-close aware, regular 16:00 ET for dates the calendar rejects."""
+
+    def close(day: date) -> datetime:
+        try:
+            return calendar.session_close(day)
+        except ValueError:  # not a session / outside coverage: the engines fail closed on their own calendar calls
+            return regular_close(day)
+
+    return close
+
+
+def _build_price_provider(name: str, clock: Clock, cache_dir: Path, calendar: JsonCalendar) -> PriceProvider:
     if name == "yahoo":
-        return YfinancePriceProvider(clock, session_close=regular_close, cache_dir=cache_dir)
+        return YfinancePriceProvider(clock, session_close=_session_close_fn(calendar), cache_dir=cache_dir)
     if name == "finnhub":
-        return FinnhubPriceProvider(os.environ.get("FINNHUB_API_KEY", ""), clock, session_close=regular_close)
+        return FinnhubPriceProvider(
+            os.environ.get("FINNHUB_API_KEY", ""), clock, session_close=_session_close_fn(calendar)
+        )
     raise ConfigInvalid(f"unknown price source: {name!r}")  # pragma: no cover - Config already restricts this
 
 
@@ -160,10 +176,10 @@ def create_app(workspace_path: str | Path, config_path: str | Path | None = None
     use_catalogue(cfg.ops.notification_catalogue)
     store = FileStore(workspace, clock=clock)
 
-    calendar = SimpleWeekdayCalendar()
+    calendar = JsonCalendar.load()
     symbol_verifier = YahooSymbolVerifier()
-    price_primary = _build_price_provider(cfg.price_source_primary, clock, workspace)
-    price_fallback = _build_price_provider(cfg.price_source_fallback, clock, workspace)
+    price_primary = _build_price_provider(cfg.price_source_primary, clock, workspace, calendar)
+    price_fallback = _build_price_provider(cfg.price_source_fallback, clock, workspace, calendar)
 
     execution = ExecutionEngine(
         store, clock, calendar, price_primary, price_fallback, exec_delay_minutes=cfg.ops.exec_delay_minutes

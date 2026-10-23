@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -179,12 +179,14 @@ def test_create_app_wires_discord_channel_when_token_and_channel_present(tmp_pat
     assert len(ctx.notify_channels) == 1
 
 
-def test_create_app_calendar_is_weekday_calendar(tmp_path: Path) -> None:
+def test_create_app_calendar_is_holiday_aware(tmp_path: Path) -> None:
     ws = make_workspace(tmp_path)
     ctx = create_app(ws, clock=fixed_clock)
     monday = datetime(2026, 10, 19, 5, 0, tzinfo=PT)  # before open, same day
     opened = ctx.calendar.next_session_open_at_or_after(monday)
     assert opened.weekday() < 5
+    friday_before_mlk = datetime(2027, 1, 15, 7, 0, tzinfo=PT)  # Mon 2027-01-18 is a market holiday
+    assert ctx.calendar.next_session_open_at_or_after(friday_before_mlk).date() == date(2027, 1, 19)
 
 
 def test_create_app_command_ctx_shares_store_and_config(tmp_path: Path) -> None:
