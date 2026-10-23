@@ -483,3 +483,11 @@ def test_dash26_no_websocket_or_fetch_references(tmp_path: Path) -> None:
     html = render_dashboard(_model(tmp_path))
     for token in ("websocket", "fetch(", "xmlhttprequest", "eventsource"):
         assert token not in html.lower()
+
+
+def test_write_dashboard_clears_stale_tmp_files(tmp_path: Path) -> None:
+    stale = tmp_path / "ws" / "dashboard" / "portfolio.json.tmp"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("torn")
+    write_dashboard(_model(tmp_path), tmp_path / "ws", render_dashboard, {})
+    assert not stale.exists()

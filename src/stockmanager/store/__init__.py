@@ -193,11 +193,17 @@ class FileStore:
             fsutil.append_lines(self.acks_path, [_jsonl(a) for a in acks])
 
     def cleanup_tmp(self) -> list[Path]:
-        """Remove stale ``*.tmp`` files under the workspace. Only valid while holding ``portfolio.lock``."""
+        """Remove stale ``*.tmp`` files under the workspace. Only valid while holding ``portfolio.lock``.
+
+        ``dashboard/`` is skipped: its writers run post-commit without this lock and clear their own stale temp files.
+        """
         if not self.lock.is_held():
             raise LockNotHeld("cleanup_tmp requires portfolio.lock")
         removed: list[Path] = []
-        for dirpath, _dirs, files in os.walk(self.root):
+        dashboard_dir = self.root / "dashboard"
+        for dirpath, dirs, files in os.walk(self.root):
+            if Path(dirpath) == self.root:
+                dirs[:] = [d for d in dirs if self.root / d != dashboard_dir]
             for name in files:
                 path = Path(dirpath) / name
                 if name.endswith(".tmp") and not path.is_symlink():

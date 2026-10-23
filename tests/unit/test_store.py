@@ -167,3 +167,16 @@ def test_cleanup_tmp_requires_lock_and_removes_only_tmp(store: FileStore) -> Non
     assert len(removed) == 2
     assert [p.name for p in store.root.rglob("*.tmp")] == []
     assert (store.root / "proposals" / "P-1.json").read_text() == "keep"
+
+
+def test_cleanup_tmp_leaves_dashboard_dir_to_its_own_writer(store: FileStore) -> None:
+    """Dashboard writers run post-commit without the lock; the sweep must not unlink their in-flight temp files."""
+    (store.root / "dashboard").mkdir(parents=True)
+    in_flight = store.root / "dashboard" / "portfolio.json.tmp"
+    in_flight.write_text("being written")
+    lock = store.lock.acquire("test", 1, 0)
+    try:
+        assert store.cleanup_tmp() == []
+    finally:
+        store.lock.release(lock.token)
+    assert in_flight.exists()
