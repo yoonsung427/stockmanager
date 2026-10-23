@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd job for the long-lived Discord bot (the periodic tick has its own plist). Install (nothing in this repo does it for you):
+    cp ops/com.stockmanager.bot.plist.example ~/Library/LaunchAgents/com.stockmanager.bot.plist
+    # edit /path/to/workspace and the DISCORD_BOT_TOKEN placeholder below, then:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.stockmanager.bot.plist
+  Verify with: /Users/yoonsung/stockmanager/.venv/bin/python -m stockmanager doctor (pass the workspace flag)
+
+  Why KeepAlive and no StartCalendarInterval: the bot is always running, not periodic. KeepAlive=true makes launchd
+  restart it whenever it exits, including after a crash.
+  DISCORD_BOT_TOKEN: launchd does not source files, so secrets.env (~/.config/stockmanager/secrets.env) is not read
+  here. Replace the /path/to/token placeholder with the real token. The plist is then a secret: keep it out of the
+  repo and chmod 600 it.
+  Create the log directory first; launchd will not.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.stockmanager.bot</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/yoonsung/stockmanager/.venv/bin/python</string>
+        <string>-m</string>
+        <string>stockmanager</string>
+        <string>bot</string>
+        <string>--workspace</string>
+        <string>/path/to/workspace</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>DISCORD_BOT_TOKEN</key>
+        <string>/path/to/token</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/path/to/workspace/logs/bot.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/workspace/logs/bot.log</string>
+</dict>
+</plist>
