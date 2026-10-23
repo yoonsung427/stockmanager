@@ -1,7 +1,7 @@
 schema_version: 1
 prompt: summary
 version: v1
-target_model: google/gemma-4-12b
+target_model: mistralai/mistral-7b-instruct-v0.3
 files:
   system.md: "54a0c46fd1e2940d03d32a5b59e80ea9eca833087f81c54aa964fd3529eb7ab9"
   user.md.j2: "319dd9adf1bfc9a3dc61add15c4fbf219bf5a9cdbd8e1de64f30bcc976e9fd06"

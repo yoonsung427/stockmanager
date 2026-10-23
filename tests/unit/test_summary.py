@@ -119,7 +119,7 @@ def pending(store: FileStore) -> list[Alert]:
 def test_summary_config_defaults_point_at_local_lm_studio() -> None:
     cfg = SummaryConfig()
     assert cfg.base_url == "http://localhost:1234/v1"
-    assert (cfg.model, cfg.max_tokens, cfg.temperature, cfg.timeout_s, cfg.price_threshold_pct) == ("google/gemma-4-12b", 4000, 0.3, 60, 5.0)
+    assert (cfg.model, cfg.max_tokens, cfg.temperature, cfg.timeout_s, cfg.price_threshold_pct) == ("mistralai/mistral-7b-instruct-v0.3", 4000, 0.3, 60, 5.0)
     assert Config().summary == cfg
     assert "summary." in BLOCKED_SET_PREFIXES
 
@@ -141,7 +141,7 @@ def test_generate_summary_calls_backend_with_config_and_returns_text() -> None:
     out = generate_summary("MSFT", [], PositionInfo(Decimal(1), Decimal(100)), FRI, SummaryConfig(max_tokens=123), backend)
     assert out == "MSFT rose 2%."
     call = backend.calls[0]
-    assert (call["model"], call["max_tokens"], call["timeout"]) == ("google/gemma-4-12b", 123, 60.0)
+    assert (call["model"], call["max_tokens"], call["timeout"]) == ("mistralai/mistral-7b-instruct-v0.3", 123, 60.0)
     assert call.get("json_schema") is None
     assert call["system"].startswith("You are a portfolio analyst")
     assert "(no recent news found)" in call["user"] and "unavailable" in call["user"]
