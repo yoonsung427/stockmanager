@@ -21,11 +21,12 @@ from stockmanager.jobs.common import NY, TradingCalendar
 from stockmanager.notify.deliver import Channel, deliver_pending
 from stockmanager.notify.templates import use_catalogue
 from stockmanager.scheduler import state as scheduler_state_mod
-from stockmanager.scheduler.scheduler import list_due_jobs
+from stockmanager.scheduler.scheduler import ScheduleSlot, list_due_jobs
 from stockmanager.scheduler.state import SchedulerState
 from stockmanager.scheduler.sweeper import sweep
 from stockmanager.store import FileStore
 from stockmanager.store.lock import Clock
+from stockmanager.triage.wakes import WakeQueue
 
 if TYPE_CHECKING:
     from stockmanager.evaluation.engine import EvaluationEngine
@@ -49,6 +50,12 @@ class SummaryJobs:
     calendar: TradingCalendar
     digest: Callable[[], list[str]]
     price_check: Callable[[], list[str]]
+
+
+#: Runs one triage wake (v2 R7): given the wake's off-cycle ``ScheduleSlot`` (``cycle_id`` is ``triage-...``, not a
+#: date), returns True once the wake is fully handled. False or an exception leaves it due for the next tick. The
+#: composition root binds it; with none bound a due wake simply stays pending (fail closed).
+TriageEscalationHandler = Callable[[ScheduleSlot], bool]
 
 
 class TickTimeout(Exception):
@@ -118,6 +125,7 @@ def tick(
     reconfirm: ReconfirmEngine | None = None,
     channels: Sequence[Channel] = (),
     summary: SummaryJobs | None = None,
+    triage_escalation: TriageEscalationHandler | None = None,
     max_runtime: float = MAX_RUNTIME_S,
 ) -> int:
     """Run one tick (AS §1.5). Single-flight on ``state/tick.lock``; returns 0 (handled) or 1 (unhandled error).
@@ -139,6 +147,7 @@ def tick(
             reconfirm=reconfirm,
             channels=channels,
             summary=summary,
+            triage_escalation=triage_escalation,
             max_runtime=max_runtime,
         )
 
@@ -153,13 +162,23 @@ def run_locked(
     reconfirm: ReconfirmEngine | None = None,
     channels: Sequence[Channel] = (),
     summary: SummaryJobs | None = None,
+    triage_escalation: TriageEscalationHandler | None = None,
     max_runtime: float = MAX_RUNTIME_S,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> int:
     """The tick body, for a caller that already holds ``tick_lock``. Never raises; returns 0 or 1 (AS §10)."""
     try:
         return _run(
-            clock, store, cfg, execution, evaluation, reconfirm, channels, Watchdog(max_runtime, monotonic), summary
+            clock,
+            store,
+            cfg,
+            execution,
+            evaluation,
+            reconfirm,
+            channels,
+            Watchdog(max_runtime, monotonic),
+            summary,
+            triage_escalation,
         )
     except Exception:  # noqa: BLE001 - top-level catch (incl. TickTimeout): the tick always exits cleanly (AS §10)
         return 1
@@ -179,6 +198,18 @@ def _run_summary_job(kind: str, summary: SummaryJobs, scheduler_state: Scheduler
         return scheduler_state
 
 
+def _run_triage_job(
+    slot: ScheduleSlot, handler: TriageEscalationHandler, scheduler_state: SchedulerState
+) -> SchedulerState:
+    """Run one triage wake. Never raises: a failure leaves the wake due and spares the jobs after it."""
+    try:
+        if handler(slot):
+            return scheduler_state.with_triage_done(slot.cycle_id)
+    except Exception:
+        log.exception("triage escalation %s failed; it stays due", slot.cycle_id)
+    return scheduler_state
+
+
 def _run(
     clock: Clock,
     store: FileStore,
@@ -189,6 +220,7 @@ def _run(
     channels: Sequence[Channel],
     watchdog: Watchdog,
     summary: SummaryJobs | None = None,
+    triage_escalation: TriageEscalationHandler | None = None,
 ) -> int:
     now = clock()
     # Heartbeat first: a long evaluation must not look like a dead scheduler to the bot's stall check (AS §10.1).
@@ -210,6 +242,7 @@ def _run(
         return 0
     portfolio = store.load_portfolio()
     proposals = _load_all_proposals(store)
+    scheduler_state = scheduler_state.with_triage_wakes(tuple(WakeQueue(store.root).all()))
 
     try:
         if portfolio.status in ("LIVE", "PAUSED"):
@@ -225,6 +258,9 @@ def _run(
                         reconfirm.run(job.proposal_id, cfg)  # not-passed outcomes stay pending/ended; see its docs
                 elif job.kind in ("digest", "price_check") and summary is not None:
                     scheduler_state = _run_summary_job(job.kind, summary, scheduler_state, now)
+                elif job.kind == "triage_escalation" and job.slot is not None and portfolio.status == "LIVE":
+                    if triage_escalation is not None:
+                        scheduler_state = _run_triage_job(job.slot, triage_escalation, scheduler_state)
                 elif job.kind == "evaluation" and job.slot is not None:
                     if portfolio.status == "LIVE":
                         if evaluation is None:
