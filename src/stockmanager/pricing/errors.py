@@ -29,3 +29,11 @@ class ValuationUnavailable(Exception):
 
 class MixedSourceError(Exception):
     """A price table or paired fill contained quotes from more than one source."""
+
+
+class StalePriceRefused(Exception):
+    """An irreversible path (a fill) was offered stale quotes and refused them (v2 H3, R11); callers fail closed."""
+
+    def __init__(self, tickers: list[str]) -> None:
+        super().__init__("stale prices refused for fills: " + ", ".join(tickers))
+        self.tickers = tickers

@@ -9,7 +9,7 @@ from typing import Literal
 
 from stockmanager.domain.docs import PriceQuote, PriceTable
 from stockmanager.domain.ports import PriceProvider
-from stockmanager.pricing.errors import PriceError, ValuationUnavailable
+from stockmanager.pricing.errors import PriceError, StalePriceRefused, ValuationUnavailable
 from stockmanager.pricing.validate import validate_quote
 
 log = logging.getLogger(__name__)
@@ -36,11 +36,20 @@ class PriceService:
         return PriceTable(source=quotes[wanted[0]].source, session_date=session_date, quotes=quotes)
 
     def fill_prices(
-        self, groups: list[list[str]], session_date: date, primary: PriceProvider, fallback: PriceProvider
+        self,
+        groups: list[list[str]],
+        session_date: date,
+        primary: PriceProvider,
+        fallback: PriceProvider,
+        *,
+        require_fresh: bool = False,
     ) -> dict[str, PriceQuote]:
         """Price the opening fills per group: one source per group, all-or-nothing across groups.
 
         Groups may use different sources (TS EDGE-30). If any group is unpriceable nothing is returned.
+        ``require_fresh`` is the irreversible-path guard (v2 H3, R11): stale quotes propagate as ``stale=True`` for
+        informational callers, but a caller about to record a fill passes ``True`` and gets ``StalePriceRefused``
+        instead of a stale price. The refusal is not remembered; the next call prices afresh.
         """
         seen: set[str] = set()
         for group in groups:
@@ -53,6 +62,10 @@ class PriceService:
             wanted = _unique(group)
             if wanted:
                 fills.update(self._one_source(wanted, session_date, "open", primary, fallback))
+        if require_fresh:
+            stale = sorted(t for t, q in fills.items() if q.stale)
+            if stale:
+                raise StalePriceRefused(stale)
         return fills
 
     def _one_source(
