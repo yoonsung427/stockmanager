@@ -1,7 +1,8 @@
 """The news stage (AS §7.1): plan -> fetch -> normalise -> boundary -> extract -> validate -> rank -> persist.
 
-Runs outside the portfolio lock (it is network- and LLM-bound). Nothing here writes outside ``FileStore``, and no raw
-text reaches a log line, a stat or the rejected file: only reason codes, ids and counts.
+Runs outside the portfolio lock (it is network- and LLM-bound). Nothing here writes outside ``FileStore``. No raw
+text reaches a log line, a stat or the rejected file: only reason codes, ids and counts. The one named exception is
+``fetch-log/<cycle_id>.jsonl`` (v2 design D8), which keeps the raw fetched items for later labeling.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from stockmanager.news.normalise import QueryResult, normalise
 from stockmanager.news.plan import NewsQuery, build_plan
 from stockmanager.news.rank import FactEntry, rank_and_cap
 from stockmanager.news.ratelimit import CircuitBreaker
-from stockmanager.news.raw import RawItem
+from stockmanager.news.raw import RawItem, item_hash
 from stockmanager.news.validate import validate_candidate
 from stockmanager.store import FileStore
 
@@ -114,6 +115,32 @@ class _FetchStage:
         """Benchmark only (news-sources §6.3): a 200 whose newest dated item is older than ``stale_feed_days``."""
         dated = [i.published for i in items if i.published is not None]
         return bool(dated) and max(dated) < self._today - timedelta(days=self._config.stale_feed_days)
+
+
+def _capture_fetch_log(store: FileStore, cycle_id: str, results: Sequence[QueryResult], fetched_at: datetime) -> None:
+    """Persist one ``fetch-log`` row per raw fetched item (v2 design D8); never raises.
+
+    fetch-log content is untrusted data for labeling only, never re-ingested as instruction, and the
+    ``RawItem.__repr__`` redaction must not be bypassed by logging raw text anywhere else.
+    """
+    rows = [
+        {
+            "cycle_id": cycle_id,
+            "item_hash": item_hash(item.url),
+            "source": result.adapter,
+            "url": item.url,
+            "raw_title": item.title,
+            "raw_snippet": item.snippet,
+            "fetched_at": fetched_at.isoformat(),
+        }
+        for result in results
+        for item in result.items
+    ]
+    try:
+        if not store.save_fetch_log(cycle_id, rows):
+            log.info("fetch-log for %s already exists; not rewritten", cycle_id)
+    except Exception as e:  # noqa: BLE001 - capture is best-effort: it must never cost the news stage
+        log.error("fetch-log capture failed for %s: %s", cycle_id, type(e).__name__)
 
 
 def run_news_stage(
@@ -209,6 +236,8 @@ def run_news_stage(
     if not results:
         status = "unavailable"
         return finish()
+
+    _capture_fetch_log(store, cycle_id, results, now)  # before extraction: the corpus survives extractor downtime
 
     # normalise, then the injection boundary
     chain_priority = {n: i for i, n in enumerate(config.fallback_chain)}

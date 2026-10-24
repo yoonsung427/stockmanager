@@ -5,6 +5,7 @@ Only ``news.extract`` and the dashboard's display path may read ``title`` or ``s
 
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 from dataclasses import dataclass
@@ -31,6 +32,11 @@ class RawItem:
     def __repr__(self) -> str:
         """Redacted: no raw text (AS §7.3)."""
         return f"RawItem(url={self.url!r}, domain={self.domain!r})"
+
+
+def item_hash(url: str) -> str:
+    """sha256 hex of the raw URL (UTF-8): the stable item identity for the fetch log (v2 design D8)."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
 
 
 def strip_html(text: str) -> str:
