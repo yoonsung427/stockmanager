@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from stockmanager.adapters.calendar import JsonCalendar
 from stockmanager.adapters.discord_rest import DiscordRESTChannel
 from stockmanager.adapters.finnhub import FinnhubPriceProvider
+from stockmanager.adapters.hermes_mainchat import HermesMainchatChannel
 from stockmanager.adapters.symbol_verifier import YahooSymbolVerifier
 from stockmanager.adapters.yfinance_lookup import search_symbols
 from stockmanager.adapters.yfinance_provider import YfinancePriceProvider, regular_close
@@ -133,6 +134,17 @@ def _build_price_provider(name: str, clock: Clock, cache_dir: Path, calendar: Js
     raise ConfigInvalid(f"unknown price source: {name!r}")  # pragma: no cover - Config already restricts this
 
 
+def append_mainchat_channel(channels: list[Channel], channel_id: int | None, *, clock: Clock = now_pt) -> None:
+    """Append the Hermes mainchat sender when ``MAINCHAT_BOT_TOKEN`` is set and the config supplies a channel id.
+
+    The channel id is the configured Discord channel (``cfg.discord.channel_id``); only the token comes from the
+    environment. Left unwired otherwise, so alerts with a pending ``mainchat`` state stay pending (fail closed, AS §9).
+    """
+    token = os.environ.get("MAINCHAT_BOT_TOKEN") or None
+    if token and channel_id:
+        channels.append(HermesMainchatChannel(token, channel_id, clock=clock))  # type: ignore[arg-type]
+
+
 @dataclass
 class AppContext:
     """Every wired component a CLI command, the tick dispatcher, or the bot needs (AS §1.3 composition root)."""
@@ -229,6 +241,7 @@ def create_app(workspace_path: str | Path, config_path: str | Path | None = None
     discord_channel_id = int(cfg.discord.channel_id) if cfg.discord.channel_id else None
     if discord_bot_token and discord_channel_id:
         notify_channels.append(DiscordRESTChannel(discord_bot_token, discord_channel_id, clock=clock))  # type: ignore[arg-type]
+    append_mainchat_channel(notify_channels, discord_channel_id, clock=clock)
 
     # AI summaries run on the local llama.cpp server through its OpenAI-compatible API, never on the Anthropic backend.
     # It needs no real key (the openai client just wants a non-empty one) and the Anthropic key is not involved.
