@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from stockmanager.commands.auth import AuthorizationResult, Sender, authorize
-from stockmanager.commands.handlers import CommandContext, handle
+from stockmanager.commands.handlers import CommandContext, handle, run_command
 from stockmanager.commands.parser import ParsedCommand, parse_command
 
 __all__ = [
@@ -14,4 +14,5 @@ __all__ = [
     "authorize",
     "handle",
     "parse_command",
+    "run_command",
 ]

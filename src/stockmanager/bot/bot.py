@@ -17,7 +17,7 @@ from pathlib import Path
 
 import discord
 
-from stockmanager.commands import CommandContext, Sender, handle
+from stockmanager.commands import CommandContext, Sender, run_command
 from stockmanager.commands.handlers import UNRECOGNIZED
 from stockmanager.notify import enqueue, rejected_control_message
 from stockmanager.notify.deliver import Channel, deliver_pending
@@ -115,7 +115,11 @@ class PortfolioBot(discord.Client):
     # -- message handling ----------------------------------------------------------------------------------------
 
     def _is_allowed_channel(self, message: discord.Message) -> bool:
-        return isinstance(message.channel, discord.DMChannel) or message.channel.id == self._channel_id
+        """The allowed channel, a DM, or a thread whose parent is the allowed channel (v2 H5: proposal threads)."""
+        channel = message.channel
+        if isinstance(channel, discord.Thread):
+            return channel.parent_id == self._channel_id
+        return isinstance(channel, discord.DMChannel) or channel.id == self._channel_id
 
     async def on_message(self, message: discord.Message) -> None:
         """Turn one incoming message into a reply (AS §9.1)."""
@@ -133,7 +137,7 @@ class PortfolioBot(discord.Client):
         if self._is_rate_limited(key, now):
             await self._reply(message, "❌ Rate limited: too many commands, try again in a minute.")
             return
-        reply = await asyncio.to_thread(handle, message.content, sender, self._ctx)
+        reply = await asyncio.to_thread(run_command, message.content, sender, self._ctx)
         answered = False
         if reply == UNRECOGNIZED and self._stock_query is not None:
             # "what's going on with MSFT?": not a command, so try it as a stock query. It does the work (an LLM

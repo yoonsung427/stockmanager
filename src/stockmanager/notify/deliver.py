@@ -34,6 +34,14 @@ TITLE_MAX_CHARS = 256
 DESCRIPTION_MAX_CHARS = 4096
 MAX_EMBED_FIELDS = 25
 
+#: How long an alert may stay undeliverable before it is dead-lettered (v2 P0 ruling: delivery-layer fixes, R6).
+#: Past this age an alert with a ``Permanent`` failure on a channel, or a channel with nothing wired to send it, moves
+#: to ``alerts/dead/`` so it stops consuming drain budget; ``Transient`` failures inside the TTL are untouched.
+ALERT_TTL_HOURS = 24
+
+#: Kinds that open or demand a user decision; they drain before narrative kinds (v2 P0 priority lanes).
+PRIORITY_KINDS: frozenset[str] = frozenset({"veto_window_open"})
+
 #: Channels whose receipt starts a veto window when ``ops.visible_channels`` is not supplied (AS §8.3, ⚑AD12).
 DEFAULT_VISIBLE_CHANNELS: tuple[str, ...] = ("discord",)
 
@@ -65,6 +73,7 @@ class Receipt:
     channel: str
     external_id: str | None
     sent_at: datetime
+    thread_id: str | None = None  # a thread the channel opened for the alert (v2 H5); stored on the proposal
 
 
 class Channel(Protocol):
@@ -124,7 +133,10 @@ def deliver_pending(
     monotonic: Callable[[], float] = time.monotonic,
     visible_channels: Sequence[str] = DEFAULT_VISIBLE_CHANNELS,
 ) -> list[str]:
-    """Deliver up to ``budget`` pending alerts, oldest first, serialised by ``alerts/.deliver.lock``.
+    """Deliver up to ``budget`` pending alerts, serialised by ``alerts/.deliver.lock``.
+
+    Two lanes share the budget: ``veto_window_open`` and ``needs_action`` alerts first, narrative kinds after, each
+    oldest first. Alerts older than ``ALERT_TTL_HOURS`` that can never be delivered are dead-lettered up front.
 
     ``time_budget`` (seconds, AS §1.5's ``budget=20 s``) additionally bounds the drain: once it has elapsed no
     further send is started, so the rest of the queue waits for the next call. A send already in flight is not
@@ -168,9 +180,10 @@ def _deliver_locked(
     out_of_time: Callable[[], bool],
     visible: frozenset[str],
 ) -> list[str]:
-    paths = sorted(pending_dir.glob("*.json"))[:budget]
-    loaded = [(path, Alert.from_json(path.read_text(encoding="utf-8"))) for path in paths]
     now = clock()
+    loaded = [(path, Alert.from_json(path.read_text(encoding="utf-8"))) for path in sorted(pending_dir.glob("*.json"))]
+    loaded = _expire_undeliverable(store, loaded, {c.name for c in channels}, now)
+    loaded = sorted(loaded, key=lambda pa: not _is_priority(pa[1]))[:budget]  # stable: oldest first within a lane
     delivered: list[str] = []
     touched: set[str] = set()
     dead: set[str] = set()
@@ -195,7 +208,7 @@ def _deliver_locked(
                 if proposal_id is not None and deadline is not None and channel.name in visible:
                     # Before the alert is marked sent: if the receipt cannot be recorded the send is retried
                     # (at-least-once; the channel's nonce suppresses the duplicate) rather than lost.
-                    _record_receipt(store, proposal_id, channel.name, now, deadline)
+                    _record_receipt(store, proposal_id, channel.name, now, deadline, receipt.thread_id)
             except (Transient, LockBusy) as exc:
                 retry_after = exc.retry_after if isinstance(exc, Transient) else None
                 state.attempts += 1
@@ -206,6 +219,7 @@ def _deliver_locked(
                 break  # preserve order: this channel's queue stops here, never overtaken by a later alert
             except Permanent as exc:
                 state.attempts += 1
+                state.permanent_failures += 1
                 state.last_error = str(exc)
                 touched.add(alert.alert_id)
                 if state.attempts >= MAX_PERMANENT_ATTEMPTS:
@@ -226,6 +240,34 @@ def _deliver_locked(
         elif alert.alert_id in touched:
             atomic_write_text(path, alert.to_json())
     return delivered
+
+
+def _is_priority(alert: Alert) -> bool:
+    """True for the lane that drains first: veto-window alerts and anything that needs the owner to act."""
+    return alert.kind in PRIORITY_KINDS or alert.needs_action
+
+
+def _expire_undeliverable(
+    store: FileStore, loaded: list[tuple[Path, Alert]], wired: set[str], now: datetime
+) -> list[tuple[Path, Alert]]:
+    """Dead-letter alerts past ``ALERT_TTL_HOURS`` with an unsent channel that has failed ``Permanent``ly or has no
+    ``Channel`` wired at all; return the rest. A channel that is merely retrying (``Transient``) is never expired."""
+    ttl = timedelta(hours=ALERT_TTL_HOURS)
+    live: list[tuple[Path, Alert]] = []
+    for path, alert in loaded:
+        stuck = [
+            name
+            for name, state in alert.channels.items()
+            if state.state != "sent" and (state.permanent_failures > 0 or name not in wired)
+        ]
+        if stuck and alert.occurred_at is not None and now - alert.occurred_at >= ttl:
+            for state in alert.channels.values():
+                if state.state != "sent":
+                    state.state = "dead"
+            _dead_letter(store, path, alert, stuck[0], reason=f"staying undeliverable for {ALERT_TTL_HOURS} h")
+        else:
+            live.append((path, alert))
+    return live
 
 
 def _veto_proposal_id(alert: Alert) -> str | None:
@@ -251,27 +293,41 @@ def _fixed_deadline(store: FileStore, proposal_id: str, alert: Alert, now: datet
     return add_elapsed(now, timedelta(hours=int(alert.binds["window_hours"])))
 
 
-def _record_receipt(store: FileStore, proposal_id: str, channel: str, now: datetime, deadline: datetime) -> None:
+def _record_receipt(
+    store: FileStore, proposal_id: str, channel: str, now: datetime, deadline: datetime, thread_id: str | None = None
+) -> None:
     """Append ``{channel, delivered_at, veto_deadline}`` to the proposal's ``delivery.receipts`` under the lock.
 
     The lock matters: the sweeper rewrites the same file in its own transaction, and an unlocked read-modify-write
     here could erase one of its transitions. Raises ``LockBusy`` if the lock cannot be taken. A terminal proposal, a
-    missing file or a channel that already has a receipt is left untouched.
+    missing file or a channel that already has a receipt is left untouched. ``thread_id``, if the channel opened a
+    thread in the same send, is stored on ``delivery`` beside the receipt (v2 H5) unless one is already recorded.
     """
     with store.transaction("deliver", max_attempts=1, sleep_seconds=0.0) as txn:
         doc = _load_proposal(store, proposal_id)
         if doc is None or is_terminal(doc.state) or any(r.channel == channel for r in doc.delivery.receipts):
             return
         receipt = DeliveryReceipt(channel=channel, delivered_at=now, veto_deadline=deadline)
-        updated = doc.delivery.model_copy(update={"receipts": [*doc.delivery.receipts, receipt]})
+        update: dict[str, Any] = {"receipts": [*doc.delivery.receipts, receipt]}
+        if thread_id is not None and doc.delivery.thread_id is None:
+            update["thread_id"] = thread_id
+        updated = doc.delivery.model_copy(update=update)
         txn.stage_proposals({proposal_id: doc.model_copy(update={"delivery": updated})})
 
 
-def _dead_letter(store: FileStore, path: Path, alert: Alert, channel_name: str) -> None:
-    """Move ``alert`` to ``alerts/dead/`` and enqueue a main-chat notice about the misconfiguration."""
+def _dead_letter(store: FileStore, path: Path, alert: Alert, channel_name: str, *, reason: str | None = None) -> None:
+    """Move ``alert`` to ``alerts/dead/`` and enqueue a main-chat notice about the misconfiguration.
+
+    ``reason`` replaces the default "after N attempts" wording. A dead ``delivery_misconfigured`` notice raises no
+    further notice, so an unwired main chat cannot loop notice -> dead -> notice. The alert's ``dedupe_key`` is released.
+    """
     dead_dir = store.root / "alerts" / "dead"
     atomic_write_text(dead_dir / path.name, alert.to_json())
     path.unlink(missing_ok=True)
+    if alert.dedupe_key is not None:
+        store.release_dedupe_key(alert.dedupe_key)
+    if alert.kind == "delivery_misconfigured":
+        return
     from stockmanager.notify.outbox import ChannelState  # local import: avoids a module-level cycle with outbox
 
     notice = Alert(
@@ -280,7 +336,7 @@ def _dead_letter(store: FileStore, path: Path, alert: Alert, channel_name: str) 
         title=f"{channel_name.capitalize()} delivery misconfigured",
         body=(
             f"Alert {alert.alert_id} ({alert.kind}) could not be delivered to {channel_name} after "
-            f"{MAX_PERMANENT_ATTEMPTS} attempts and was moved to the dead letter queue."
+            f"{reason or f'{MAX_PERMANENT_ATTEMPTS} attempts'} and was moved to the dead letter queue."
         ),
         fields={"channel": channel_name, "original_kind": alert.kind, "original_alert_id": alert.alert_id},
         commands=["STATUS"],
@@ -300,3 +356,5 @@ def _mark_sent(store: FileStore, path: Path, alert: Alert) -> None:
     target = sent_dir / path.name
     os.replace(path, target)
     _fsutil.fsync_dir(sent_dir)
+    if alert.dedupe_key is not None:
+        store.release_dedupe_key(alert.dedupe_key)

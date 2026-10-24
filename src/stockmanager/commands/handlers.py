@@ -57,6 +57,16 @@ class CommandContext:
     price_fallback: PriceProvider | None = None  # ``None``: the primary is retried in its place
 
 
+def run_command(text: str, sender: Sender, ctx: CommandContext) -> str:
+    """Process-agnostic command entry (v2 bot/scheduler split): everything comes from ``ctx``, nothing from a bot.
+
+    Safe to call from the bot process or the scheduler process: the handlers read and write only through
+    ``ctx.store`` (transactions under ``portfolio.lock``), so either process can run a command while the other is
+    down or restarting. Transport concerns (rate limits, the backfill cursor, replies) stay in the caller.
+    """
+    return handle(text, sender, ctx)
+
+
 def handle(text: str, sender: Sender, ctx: CommandContext) -> str:
     """Parse, authorize, and execute a command. Always returns a reply string (TS CMD-X01)."""
     normalized = text.strip()

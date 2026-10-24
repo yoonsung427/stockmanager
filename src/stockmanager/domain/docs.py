@@ -252,6 +252,7 @@ class ProposalDelivery(_Doc):
     """Receipts from visible-channel delivery (AS §8.3); empty until the veto alert has reached the user."""
 
     receipts: list[DeliveryReceipt] = Field(default_factory=list)
+    thread_id: str | None = None  # the thread opened for this proposal's delivery, if any (v2 H5); replies route by it
 
 
 class ProposalDoc(_Doc):
