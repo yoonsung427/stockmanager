@@ -9,6 +9,7 @@ building a fresh ``FileStore`` on the same root.
 from __future__ import annotations
 
 import os
+import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -152,3 +153,22 @@ class FaultInjector:
         fsutil.atomic_write_bytes = atomic_write_bytes
         undo.append(lambda: setattr(fsutil, "atomic_write_bytes", real))
 
+
+
+@contextmanager
+def sqlite_down() -> Iterator[None]:
+    """Every ``sqlite3.connect`` raises for the ``with`` body, as an unavailable event database would (v2 R4).
+
+    Code that must survive the outage (outbox enqueue, dedupe, delivery) is exercised inside it; the atomic-file
+    store never opens SQLite, so it must be unaffected.
+    """
+    real = sqlite3.connect
+
+    def refuse(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        raise sqlite3.OperationalError("unable to open database file (simulated outage)")
+
+    sqlite3.connect = refuse  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        sqlite3.connect = real
