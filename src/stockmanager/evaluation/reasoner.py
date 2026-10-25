@@ -95,6 +95,7 @@ class AnthropicReasoner:
         self._timeout = config.reasoner_timeout_s
         self._system = prompt.render_system(limits)
         self._backend = backend
+        self.prompt_sha256 = prompt.sha256  # pinned into every evaluation record
         self.last_model_id: str | None = None  # the model that actually answered (refusal fallbacks may switch it)
         if prompt.target_model != self._model:
             log.warning(
