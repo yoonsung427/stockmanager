@@ -58,7 +58,14 @@ class ReasonerPrompt:
     def render_user(self, input: ReasonerInput) -> str:
         """Render the user message; each structured block becomes ``tojson(indent=2)`` of the JSON-mode dump."""
         data = input.model_dump(mode="json")
-        return self.user_template.render(**data)
+        text = self.user_template.render(**data)
+        # The outcomes block is added here rather than in ``user.md.j2`` so the sha256-pinned template is unchanged. Same
+        # isolation as the other blocks: a quarantined tag around the JSON-mode dump of a typed, system-computed model.
+        block = f"<outcomes>\n{xe(json.dumps(data['outcomes'], indent=2, ensure_ascii=False))}\n</outcomes>"
+        marker = "</recent_vetoes>"
+        if marker in text:
+            return text.replace(marker, f"{marker}\n\n{block}", 1)
+        return f"{text}\n\n{block}"  # pragma: no cover - a template without the veto block
 
 
 def _prompts_root() -> Traversable:

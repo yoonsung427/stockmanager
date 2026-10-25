@@ -178,6 +178,7 @@ def reasoner_input() -> ReasonerInput:
                     "reason": None,
                 }
             ],
+            "outcomes": {},
         }
     )
 

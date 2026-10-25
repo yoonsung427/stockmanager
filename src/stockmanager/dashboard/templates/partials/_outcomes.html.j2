@@ -1,0 +1,14 @@
+<section data-section="outcomes">
+  <h2>Outcomes</h2>
+  {% if m.outcomes.provisional %}
+  <p>Hit-rate (90 days vs {{ m.benchmark_ticker }}): provisional &mdash; {{ m.outcomes.wins }} wins of {{ m.outcomes.scored }} scored (needs {{ m.outcomes.min_scored }}).</p>
+  {% else %}
+  <p>Hit-rate (90 days vs {{ m.benchmark_ticker }}): {{ m.outcomes.hit_rate_pct|decimal(2) }}% ({{ m.outcomes.wins }} of {{ m.outcomes.scored }} scored trades).</p>
+  {% endif %}
+  <table>
+    <tr><th>Horizon</th><th>Scored</th><th>Mean excess vs benchmark</th></tr>
+    {% for days, scored, mean in m.outcomes.trends %}
+    <tr><td>{{ days }}d</td><td>{{ scored }}</td><td>{{ mean|pct }}</td></tr>
+    {% endfor %}
+  </table>
+</section>

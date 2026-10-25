@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from datetime import date
 from decimal import Decimal
 
 from stockmanager.config.model import Config
@@ -30,6 +31,8 @@ from stockmanager.llm.summary import SummaryError
 from stockmanager.notify.deliver import Channel, deliver_pending
 from stockmanager.notify.outbox import prepare
 from stockmanager.notify.templates import digest_alert
+from stockmanager.outcomes.models import describe, hit_rate
+from stockmanager.outcomes.scoring import load_scores
 from stockmanager.pricing.errors import PriceError, ValuationUnavailable
 from stockmanager.store import FileStore
 from stockmanager.store.lock import Clock
@@ -37,6 +40,7 @@ from stockmanager.store.lock import Clock
 log = logging.getLogger(__name__)
 
 NOTABLE_MOVE_PCT = Decimal(1)
+FRIDAY = 4
 
 
 def run_digest(
@@ -95,7 +99,8 @@ def run_digest(
     if wanted and failed == wanted:
         raise SummaryError(f"digest: all {wanted} summaries failed")
 
-    alert = digest_alert(summaries) if summaries else None
+    lines = [*summaries, *_weekly_outcomes_line(store, today)]
+    alert = digest_alert(lines) if lines else None
     with store.transaction("digest") as tx:
         tx.require(status="LIVE")
         if closes:
@@ -106,6 +111,14 @@ def run_digest(
     if alert is not None and channels:
         _deliver(store, channels, clock, config)
     return summaries
+
+
+def _weekly_outcomes_line(store: FileStore, today: date) -> list[str]:
+    """The hit-rate line (O2), once a week: on the Friday digest, when any trade has been scored."""
+    if today.weekday() != FRIDAY:
+        return []
+    scores = load_scores(store.root)
+    return [describe(hit_rate(scores))] if scores else []
 
 
 def _deliver(store: FileStore, channels: Sequence[Channel], clock: Clock, config: Config) -> None:

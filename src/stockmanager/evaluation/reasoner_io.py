@@ -144,6 +144,46 @@ class VetoRecord(_IO):
 
 
 MAX_VETOES = 10
+#: Cap on raw outcome records rendered to the model (O3); the stats block is a fixed handful of fields.
+MAX_OUTCOME_RECORDS = 10
+
+
+class OutcomeRecord(_IO):
+    """One scored trade, stripped to what the model may see: an ordinal, never the trade or proposal ID (LP §4.4).
+
+    ``win`` is ``None`` for 30/60-day trend rows and for every row while the section is provisional (R12).
+    """
+
+    ordinal: str
+    action: Literal["BUY", "SELL"]
+    ticker: str
+    fill_date: dt.date
+    horizon_days: int
+    fraction: DecStr | None
+    excess_pct: DecStr
+    win: bool | None
+
+
+class OutcomeStats(_IO):
+    """90-day hit-rate. Present only once ``OutcomesSection.min_scored`` trades are scored (R12)."""
+
+    scored: int
+    wins: int
+    hit_rate_pct: DecStr
+
+
+class OutcomesSection(_IO):
+    """Outcomes/stats block (O3). System-computed from fills and prices; carries no free text from any source.
+
+    ``provisional`` is true below ``min_scored`` scored 90-day trades: only raw records are rendered, ``stats`` is
+    ``None``. At or above it ``provisional`` flips to false and ``stats`` appears, with no human gate (R12).
+    """
+
+    provisional: bool = True
+    min_scored: int = 10
+    scored_90d: int = 0
+    records: list[OutcomeRecord] = Field(default_factory=list, max_length=MAX_OUTCOME_RECORDS)
+    stats: OutcomeStats | None = None
 
 
 class ReasonerInput(_IO):
@@ -160,6 +200,7 @@ class ReasonerInput(_IO):
     sector_etfs: list[SectorETF]
     facts: list[FactProjection]
     veto_history: list[VetoRecord] = Field(max_length=MAX_VETOES)
+    outcomes: OutcomesSection
 
 
 # -- output ------------------------------------------------------------------------------------------------------

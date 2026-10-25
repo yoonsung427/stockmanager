@@ -17,8 +17,12 @@ from stockmanager.config.model import Config
 from stockmanager.domain import metrics
 from stockmanager.domain.docs import PortfolioDoc, PriceTable
 from stockmanager.evaluation.reasoner_io import (
+    MAX_OUTCOME_RECORDS,
     BenchmarkSnapshot,
     FactProjection,
+    OutcomeRecord,
+    OutcomesSection,
+    OutcomeStats,
     PortfolioSnapshot,
     PositionSnapshot,
     ReasonerConfig,
@@ -29,6 +33,8 @@ from stockmanager.evaluation.reasoner_io import (
     VetoRecord,
 )
 from stockmanager.news import NewsResult
+from stockmanager.outcomes.models import GATE_HORIZON, hit_rate
+from stockmanager.outcomes.scoring import load_scores
 from stockmanager.store import FileStore
 
 MAX_VETOES = 10
@@ -63,7 +69,8 @@ def _veto_history(store: FileStore) -> list[VetoRecord]:
             doc = ProposalDoc.model_validate_json(path.read_text(encoding="utf-8"))
         except ValueError:
             continue
-        if doc.state == "VETOED":
+        # A ``system:evaluation`` supersede is bookkeeping for a re-run cycle, not an owner veto (v2 design §4).
+        if doc.state == "VETOED" and doc.transitions[-1].actor != "system:evaluation":
             vetoed.append(doc)
     vetoed.sort(key=lambda d: d.created_at, reverse=True)
     records: list[VetoRecord] = []
@@ -79,6 +86,39 @@ def _veto_history(store: FileStore) -> list[VetoRecord]:
             )
         )
     return records
+
+
+def _outcomes_section(store: FileStore) -> OutcomesSection:
+    """Outcomes/stats block (O3, R12), from the persisted scores only; trade IDs are replaced by an ordinal.
+
+    Below ``MIN_SCORED`` scored 90-day trades it is provisional raw records with no verdicts and no stats; at or above
+    it the hit-rate enters and the 90-day rows carry their win flag. The flip needs no human step.
+    """
+    scores = load_scores(store.root)
+    rate = hit_rate(scores)
+    by_recency = sorted(scores, key=lambda s: (s.fill_date, s.trade_id, s.horizon_days), reverse=True)
+    newest = by_recency[:MAX_OUTCOME_RECORDS]
+    records = [
+        OutcomeRecord(
+            ordinal=f"O{i}",
+            action=s.action,
+            ticker=s.ticker,
+            fill_date=s.fill_date,
+            horizon_days=s.horizon_days,
+            fraction=str(s.fraction) if s.fraction is not None else None,
+            excess_pct=str(s.excess_pct),
+            win=s.win if (not rate.provisional and s.horizon_days == GATE_HORIZON) else None,
+        )
+        for i, s in enumerate(newest, start=1)
+    ]
+    stats = (
+        OutcomeStats(scored=rate.scored, wins=rate.wins, hit_rate_pct=str(rate.hit_rate_pct))
+        if rate.hit_rate_pct is not None
+        else None
+    )
+    return OutcomesSection(
+        provisional=rate.provisional, min_scored=rate.min_scored, scored_90d=rate.scored, records=records, stats=stats
+    )
 
 
 ReasonerInputBuilder = Callable[[str, PortfolioDoc, PriceTable, NewsResult, Config], ReasonerInput]
@@ -153,6 +193,7 @@ def make_reasoner_input_builder(store: FileStore) -> ReasonerInputBuilder:
             sector_etfs=[],
             facts=[FactProjection.model_validate(f.for_reasoner()) for f in news.facts],
             veto_history=_veto_history(store),
+            outcomes=_outcomes_section(store),
         )
 
     return build
