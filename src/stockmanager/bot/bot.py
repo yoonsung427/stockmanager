@@ -178,9 +178,9 @@ class PortfolioBot(discord.Client):
         action, proposal_id = parsed
         sender = Sender("discord", user_id, interaction_id, at)
         now = self._clock()
-        if self._is_rate_limited(user_id, now):
-            return "❌ Rate limited: too many commands, try again in a minute."
         reply = await asyncio.to_thread(run_command, click_command(action, proposal_id, reason), sender, self._ctx)
+        if reply == RATE_LIMITED:  # the handler layer owns the budget (v2 D2); the bot only relays the refusal
+            return reply
         if reply.startswith("❌") and self._should_alert_rejection(user_id, now):
             await asyncio.to_thread(enqueue, rejected_control_message(user_id), self._store)
         return reply
