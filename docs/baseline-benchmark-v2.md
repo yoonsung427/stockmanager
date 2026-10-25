@@ -16,7 +16,7 @@ nothing here is a measured result yet. Replace the values from the rerun output,
 | Labels coverage (labeled / items) | _pending the >=4-week corpus_ |
 | Classifier | `LLMClassifier` (OpenAI-compatible, `reasoning_content` primary) — model _pending_ |
 
-Day-0 file (2026-10-25, 2102 rows, 980 duplicates) is frozen and excluded (R17), archived unmodified at sha256:be6d6aa32b9cff1e293adb0a4f0d75073bdf6debf9718d4a2a73c32934248d41; the corpus measures from 2026-10-26.
+Day-0 file (2026-10-25, 2102 rows, 980 duplicates) is frozen and excluded (R17), archived unmodified at sha256:be6d6aa32b9cff1e293adb0a4f0d75073bdf6debf9718d4a2a73c32934248d41; the corpus measures from the first clean post-fix file (2026-10-26, or a re-run 2026-10-25 cycle if it re-writes clean).
 
 ## Results
 
