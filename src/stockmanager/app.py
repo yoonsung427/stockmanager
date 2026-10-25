@@ -54,7 +54,8 @@ from stockmanager.news.fetchers.yahoo_rss import YahooRssFetcher
 from stockmanager.news.pipeline import run_news_stage
 from stockmanager.notify.deliver import Channel
 from stockmanager.notify.templates import use_catalogue
-from stockmanager.scheduler.tick import SummaryJobs
+from stockmanager.scheduler.scheduler import ScheduleSlot
+from stockmanager.scheduler.tick import SummaryJobs, TriageEscalationHandler
 from stockmanager.store import FileStore
 from stockmanager.store.lock import Clock, now_pt
 
@@ -110,6 +111,24 @@ def load_secrets(path: Path | None = None) -> None:
         m = _SECRET_LINE.match(line)
         if m:
             os.environ.setdefault(m.group(1), m.group(2))
+
+
+def make_triage_escalation(evaluation: EvaluationEngine, load_cfg: Callable[[], Config]) -> TriageEscalationHandler:
+    """The tick's ``triage_escalation`` handler (v2 D1/R7): one off-cycle evaluation for a due triage wake.
+
+    ``load_cfg`` is read on every call so a ``triage.enabled`` flip in ``config.yaml`` takes effect at once. The
+    handler refuses (returns False, leaving the wake pending) unless ``triage.escalation_live``: when triage is
+    disabled it is a no-op, and in shadow mode it never runs the evaluation, so triage still produces no proposal
+    and no fill. It returns True only for a ``completed`` run; any other outcome retries on the next tick.
+    """
+
+    def handle(slot: ScheduleSlot) -> bool:
+        cfg = load_cfg()
+        if not cfg.triage.enabled or not cfg.triage.escalation_live:
+            return False
+        return evaluation.run(slot, cfg).outcome == "completed"
+
+    return handle
 
 
 def _session_close_fn(calendar: JsonCalendar) -> Callable[[date], datetime]:
@@ -172,6 +191,7 @@ class AppContext:
     discord_channel_id: int | None = None
     summary_jobs: SummaryJobs | None = None
     stock_query: StockQuery | None = None
+    triage_escalation: TriageEscalationHandler | None = None
 
     def run_news_stage(self, cycle_id: str, portfolio: PortfolioDoc) -> NewsResult:
         """``NewsRunner`` (AS §7): run the whole news stage for one cycle against ``portfolio``."""
@@ -310,6 +330,10 @@ def create_app(workspace_path: str | Path, config_path: str | Path | None = None
         reasoner,
         app_ctx.run_news_stage,
         make_reasoner_input_builder(store),
+    )
+    config_file = Path(config_path) if config_path is not None else None
+    app_ctx.triage_escalation = make_triage_escalation(
+        app_ctx.evaluation, lambda: load_config(workspace, config_file)
     )
     return app_ctx
 

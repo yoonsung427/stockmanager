@@ -53,6 +53,14 @@ DEFAULTS: dict[str, tuple[Severity, str, str]] = {
     "reconcile_divergence": ("alert", "Reconcile divergence", "The books diverged: {signature}"),
     "rejected_control_message": ("alert", "Rejected control message", "A command from {sender} was rejected."),
     "price_source_failure": ("alert", "Price source failure: {job}", "{job}: {outcome}"),
+    "stale_price_refused": (
+        "info",
+        "Fill held back: stale prices ({job})",
+        (
+            "{job}: only stale prices were available for {tickers}, so nothing was filled. "
+            "It retries automatically on the next tick; no action needed."
+        ),
+    ),
     "run_skipped_busy": ("alert", "Run skipped: {job}", "{job} skipped slot {slot}: the portfolio was busy."),
     "system_ready": ("info", "System ready", "The system is ready."),
     "config_error": (
@@ -281,6 +289,22 @@ def price_source_failure(job: str, tickers: list[str], fallback_worked: bool) ->
         fields={"job": job, "tickers": tickers_str, "fallback_worked": str(fallback_worked)},
         commands=["STATUS"],
         dedupe_key=f"price:{job}:{tickers_str}",
+    )
+
+
+def stale_price_refused(job: str, tickers: list[str], day: date) -> Alert:
+    """A fill was refused because only stale prices were available (v2 H3, R11). Informational: it self-recovers.
+
+    Carries no command and is not ``needs_action``: the fill path resumes on its own when a fresh price arrives.
+    Deduped per job and day so a long stale spell raises one alert, not one per tick.
+    """
+    tickers_str = ",".join(tickers)
+    return render(
+        "stale_price_refused",
+        job=job,
+        tickers=tickers_str,
+        fields={"job": job, "tickers": tickers_str},
+        dedupe_key=f"stale_price:{job}:{day.isoformat()}",
     )
 
 

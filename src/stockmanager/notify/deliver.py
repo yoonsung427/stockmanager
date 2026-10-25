@@ -19,6 +19,7 @@ from typing import Any, Literal, Protocol
 from stockmanager.domain.docs import DeliveryReceipt, ProposalDoc
 from stockmanager.domain.proposal_state import is_terminal
 from stockmanager.domain.timeutil import add_elapsed
+from stockmanager.notify.components import proposal_components
 from stockmanager.notify.outbox import Alert, enqueue
 from stockmanager.store import FileStore
 from stockmanager.store import fsutil as _fsutil
@@ -60,10 +61,14 @@ class Permanent(Exception):
 
 @dataclass(frozen=True)
 class Rendered:
-    """What ``render`` produces for one channel: plain text, plus a Discord embed where applicable."""
+    """What ``render`` produces for one channel: plain text, plus a Discord embed and buttons where applicable.
+
+    ``components`` is Discord message-component JSON (v2 H4): the VETO/APPROVE row on a proposal embed.
+    """
 
     text: str
     embed: dict[str, Any] | None = None
+    components: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -109,7 +114,9 @@ def render(alert: Alert, channel: str, now: datetime, *, deadline: datetime | No
             "fields": fields[:MAX_EMBED_FIELDS],
             "timestamp": (alert.occurred_at or now).isoformat(),
         }
-        return Rendered(text=alert.title, embed=embed)
+        proposal_id = _veto_proposal_id(alert)
+        components = proposal_components(proposal_id) if proposal_id is not None else None
+        return Rendered(text=alert.title, embed=embed, components=components or None)
     lines = [f"**{alert.title}**", "", body]
     if alert.fields:
         lines += ["", *(f"- **{k}**: {v}" for k, v in alert.fields.items())]

@@ -39,6 +39,8 @@ def post_message(
     payload: dict[str, Any] = {"nonce": nonce, "enforce_nonce": True, "allowed_mentions": {"parse": []}}
     if rendered.embed is not None:
         payload["embeds"] = [rendered.embed]
+        if rendered.components:
+            payload["components"] = rendered.components
     else:
         payload["content"] = rendered.text
     url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"

@@ -89,9 +89,29 @@ def cmd_tick(args: argparse.Namespace) -> int:
             reconfirm=ctx.reconfirm,
             channels=ctx.notify_channels,
             summary=ctx.summary_jobs,
+            triage_escalation=ctx.triage_escalation,
         )
     print(f"tick: {'ok' if result == 0 else 'error'}")
     return result
+
+
+def cmd_triage(args: argparse.Namespace) -> int:
+    """``stockmanager triage``: the triage cron hook (v2 D1, R7), its own job and lock, independent of ``tick``.
+
+    Log-only unless ``triage.enabled``, ``shadow_mode: false`` and ``benchmark_passed`` are all set. No production
+    classifier exists yet (pending the Q1 benchmark), so every pre-filtered item stays in the backlog (fail closed).
+    """
+    from stockmanager.triage.classifier import UnavailableClassifier
+    from stockmanager.triage.runner import run_triage
+
+    workspace: Path = args.workspace
+    if not workspace.exists():
+        raise WorkspaceMissing(f"workspace not found: {workspace}; run `stockmanager init` first")
+    ctx = create_app(workspace, args.config)
+    held = {p.ticker for p in ctx.store.load_portfolio().positions} if ctx.store.portfolio_exists() else set()
+    counts = run_triage(ctx.store, ctx.cfg.triage, UnavailableClassifier(), held)
+    print("triage: " + (", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing to do"))
+    return 0
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -247,6 +267,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name, func, help_text in [
         ("status", cmd_status, "print portfolio status"),
         ("tick", cmd_tick, "run one scheduler tick"),
+        ("triage", cmd_triage, "run the news triage job once (log-only in shadow mode)"),
         ("news", cmd_news, "run the news stage once against the current portfolio"),
         ("report", cmd_report, "build and write the dashboard"),
         ("pause", cmd_pause, "pause the system"),

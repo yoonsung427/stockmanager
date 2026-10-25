@@ -24,10 +24,10 @@ from stockmanager.domain.ids import opening_proposal_id, trade_id
 from stockmanager.domain.money import q4
 from stockmanager.domain.ports import PriceProvider, SessionCalendar
 from stockmanager.domain.proposal_state import GENESIS_HASH, ProposalState, can_transition, chain_hash
-from stockmanager.notify.emit import emit_reconcile_divergence, emit_run_skipped_busy
+from stockmanager.notify.emit import emit_reconcile_divergence, emit_run_skipped_busy, emit_stale_price_refused
 from stockmanager.notify.outbox import prepare
 from stockmanager.notify.templates import final_report, price_source_failure, proposal_voided, trade_executed
-from stockmanager.pricing.errors import PriceError, ValuationUnavailable
+from stockmanager.pricing.errors import PriceError, StalePriceRefused, ValuationUnavailable
 from stockmanager.pricing.service import PriceService
 from stockmanager.store import FileStore
 from stockmanager.store.lock import PT, Clock, LockBusy
@@ -167,7 +167,13 @@ class ExecutionEngine:
 
         # Step 3: prices, no lock.
         try:
-            quotes = self._prices.fill_prices(groups, doc.fill_session_date, self._primary, self._fallback)
+            quotes = self._prices.fill_prices(
+                groups, doc.fill_session_date, self._primary, self._fallback, require_fresh=True
+            )
+        except StalePriceRefused as exc:
+            # Fail closed (v2 H3, R11): the state stays APPROVED, so the next tick refills if a fresh price arrives.
+            emit_stale_price_refused(self._store, f"execution:{proposal_id}", exc.tickers)
+            return RunResult("failed_closed", str(exc))
         except (PriceError, ValuationUnavailable) as exc:
             self._alert_price_failure(proposal_id, doc, str(exc), now)
             return RunResult("failed_closed", str(exc))
@@ -362,7 +368,10 @@ class ExecutionEngine:
         session_date = session_open.date()
         groups = [[row["ticker"]] for row in staged]  # independent single-leg fills (TS EDGE-30)
         try:
-            quotes = self._prices.fill_prices(groups, session_date, self._primary, self._fallback)
+            quotes = self._prices.fill_prices(groups, session_date, self._primary, self._fallback, require_fresh=True)
+        except StalePriceRefused as exc:
+            emit_stale_price_refused(self._store, "execution:opening", exc.tickers)  # re-arms next tick (v2 H3)
+            return RunResult("failed_closed", str(exc))
         except (PriceError, ValuationUnavailable) as exc:
             self._alert_opening_failure(staged, str(exc), now)
             return RunResult("failed_closed", str(exc))
