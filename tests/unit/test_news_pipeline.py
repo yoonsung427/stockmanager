@@ -1,5 +1,6 @@
 """End-to-end news stage with fake fetchers and extractor: status logic, fallback, uncovered tickers, persistence."""
 
+import hashlib
 import json
 import threading
 from datetime import timedelta
@@ -388,3 +389,46 @@ def test_unsafe_cycle_id_cannot_escape_the_directory(store: FileStore) -> None:
         run_news_stage(
             "../evil", portfolio("AAPL"), cfg(), clock, [FakeFetcher("searxng", [])], FakeExtractor(), store=store
         )
+
+
+def fetch_log_rows(store: FileStore) -> list[dict[str, Any]]:
+    path = store.root / "fetch-log" / "2026-10-19.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def test_fetch_log_has_one_complete_row_per_fetched_item(store: FileStore) -> None:
+    result = run(store, [FakeFetcher("searxng", article)])
+    rows = fetch_log_rows(store)
+    assert len(rows) == result.stats.fetched_items > 0
+    fields = {"cycle_id", "item_hash", "source", "url", "raw_title", "raw_snippet", "fetched_at"}
+    for row in rows:
+        assert set(row) == fields
+        assert all(row[f] is not None for f in fields)
+        assert row["cycle_id"] == "2026-10-19" and row["source"] == "searxng"
+        assert row["item_hash"] == hashlib.sha256(row["url"].encode("utf-8")).hexdigest()
+        assert row["raw_title"] and row["fetched_at"] == clock().isoformat()
+
+
+def test_fetch_log_survives_extractor_downtime(store: FileStore) -> None:
+    ex = FakeExtractor(lambda item: ExtractFailure("extract_infra", infra=True, auth=True))
+    result = run(store, [FakeFetcher("searxng", article)], ex)
+    assert result.news_status == "unavailable"
+    assert len(fetch_log_rows(store)) == result.stats.fetched_items > 0
+
+
+def test_fetch_log_is_append_only_per_cycle(store: FileStore) -> None:
+    run(store, [FakeFetcher("searxng", article)])
+    path = store.root / "fetch-log" / "2026-10-19.jsonl"
+    first = path.read_text()
+    run(store, [FakeFetcher("searxng", lambda q: [raw(title="different", url="https://other.example/x")])])
+    assert path.read_text() == first
+
+
+def test_fetch_log_write_failure_does_not_break_the_stage(store: FileStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(cycle_id: str, rows: Any) -> bool:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "save_fetch_log", boom)
+    result = run(store, [FakeFetcher("searxng", article)])
+    assert isinstance(result, NewsResult) and result.news_status == "ok" and result.facts
+    assert persisted(store)[0]["news_status"] == "ok"

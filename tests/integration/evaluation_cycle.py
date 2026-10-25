@@ -150,10 +150,10 @@ def test_e2e02_stages_1_to_5_news_to_delivered_alerts(world: World) -> None:
     veto = next(a for a in queued if a["kind"] == "veto_window_open")
     assert veto["needs_action"] and veto["commands"][0] == f"VETO {PAIR_ID} [reason]"  # AC-04: the literal command
 
-    # -> delivery: both channels get every alert once, oldest first; the veto deadline is bound at delivery time
+    # -> delivery: both channels get every alert once, the veto alert first (priority lane, v2 P0); the veto deadline is bound at delivery time
     world.clock.advance(minutes=5)
     deliver_pending(world.store, [rig.discord, rig.mainchat], world.clock)
-    ids = sorted(a["alert_id"] for a in queued)
+    ids = [veto["alert_id"], *(a["alert_id"] for a in queued if a is not veto)]
     assert [n for n, _ in rig.discord.sent] == ids == [n for n, _ in rig.mainchat.sent]
     assert list((world.root / "alerts" / "pending").glob("*.json")) == []
     assert len(list((world.root / "alerts" / "sent").glob("*.json"))) == len(ids)
@@ -220,4 +220,9 @@ def test_a_book_that_changes_during_the_cycle_aborts_the_commit(world: World) ->
     assert not (world.root / "proposals").exists()
     assert alerts(world.root) == []
     written = set(workspace_hashes(world.root)) - set(before)
-    assert written <= {"extracted-facts/2026-10-24.json", "extracted-facts/2026-10-24.rejected.jsonl"}  # phase B output only
+    # phase B output only (news facts plus the D8 fetch-log capture)
+    assert written <= {
+        "extracted-facts/2026-10-24.json",
+        "extracted-facts/2026-10-24.rejected.jsonl",
+        "fetch-log/2026-10-24.jsonl",
+    }

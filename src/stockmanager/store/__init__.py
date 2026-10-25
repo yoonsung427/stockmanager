@@ -6,9 +6,11 @@ per line. Callers that mutate the books go through ``FileStore.transaction`` so 
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -83,6 +85,11 @@ class FileStore:
     def proposal_path(self, proposal_id: str) -> Path:
         """``proposals/<proposal_id>.json``."""
         return self._child("proposals", f"{proposal_id}.json")
+
+    @property
+    def dedupe_path(self) -> Path:
+        """``state/dedupe_keys.json``: alert ``dedupe_key`` -> ISO time first enqueued (atomic-file store, no database)."""
+        return self.root / "state" / "dedupe_keys.json"
 
     def _child(self, directory: str, name: str) -> Path:
         """``root/directory/name``, refusing names that would escape ``directory``."""
@@ -163,6 +170,60 @@ class FileStore:
         )
         fsutil.atomic_write_text(self._child("extracted-facts", f"{cycle_id}.json"), canonical_json(doc))
 
+    def save_fetch_log(self, cycle_id: str, rows: Sequence[Mapping[str, Any]]) -> bool:
+        """Write ``fetch-log/<cycle_id>.jsonl`` (v2 design D8) once; return False if the cycle's file already exists.
+
+        Append-only at directory level: an existing cycle file is never rewritten, so a rerun cannot alter the corpus.
+        Rows carry raw news text and are for labeling only (the one place it is persisted).
+        """
+        path = self._child("fetch-log", f"{cycle_id}.jsonl")
+        if path.exists():
+            return False
+        fsutil.atomic_write_text(path, "".join(_jsonl(r) + "\n" for r in rows))
+        return True
+
+    def claim_dedupe_key(self, key: str, now: datetime, retention: timedelta) -> bool:
+        """Record ``key`` as enqueued at ``now``; return False if it was already claimed within ``retention``.
+
+        Lives in the atomic-file store (v2 R4) so the check survives an unavailable event database. Entries older than
+        ``retention`` are pruned on every claim. A read-modify-write under ``state/.dedupe.lock`` because the bot and
+        scheduler processes both enqueue.
+        """
+        with self._dedupe_guard():
+            ledger = self._read_dedupe(now, retention)
+            if key in ledger:
+                return False
+            ledger[key] = now
+            self._write_dedupe(ledger)
+            return True
+
+    def release_dedupe_key(self, key: str) -> None:
+        """Forget ``key`` once its alert has left ``pending/`` (sent or dead-lettered), so the key is free again."""
+        with self._dedupe_guard():
+            ledger = self._read_dedupe(None, None)
+            if ledger.pop(key, None) is not None:
+                self._write_dedupe(ledger)
+
+    def dedupe_keys(self) -> set[str]:
+        """Every key currently held in ``state/dedupe_keys.json``."""
+        return set(self._read_dedupe(None, None))
+
+    def _dedupe_guard(self) -> _FlockGuard:
+        return _FlockGuard(self.root / "state" / ".dedupe.lock")
+
+    def _read_dedupe(self, now: datetime | None, retention: timedelta | None) -> dict[str, datetime]:
+        try:
+            raw = json.loads(self.dedupe_path.read_text(encoding="utf-8"))
+            ledger = {str(k): datetime.fromisoformat(v) for k, v in raw.items()}
+        except (OSError, ValueError, AttributeError, TypeError):
+            return {}  # missing or torn ledger: dedup is best-effort and must never block an alert
+        if now is not None and retention is not None:
+            ledger = {k: at for k, at in ledger.items() if now - at < retention}
+        return ledger
+
+    def _write_dedupe(self, ledger: Mapping[str, datetime]) -> None:
+        fsutil.atomic_write_text(self.dedupe_path, canonical_json({k: at.isoformat() for k, at in sorted(ledger.items())}))
+
     def save_nav_history(self, rows: list[dict[str, Any]]) -> None:
         """Append one JSON line per row to ``nav_history.jsonl``, fsync per line."""
         fsutil.append_lines(self.nav_history_path, [_jsonl(r) for r in rows])
@@ -218,6 +279,22 @@ class FileStore:
         from stockmanager.store.transaction import Transaction
 
         return Transaction(self, job, max_attempts=max_attempts, sleep_seconds=sleep_seconds)
+
+
+class _FlockGuard:
+    """``with`` block holding an exclusive ``flock`` on a sidecar file, created (with its directory) on demand."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._fd = -1
+
+    def __enter__(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(self._fd, fcntl.LOCK_EX)
+
+    def __exit__(self, *exc: object) -> None:
+        os.close(self._fd)
 
 
 def _jsonl(row: Mapping[str, Any]) -> str:
