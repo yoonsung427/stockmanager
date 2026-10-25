@@ -17,8 +17,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from stockmanager.config.model import Config
 from stockmanager.domain.docs import Fact, ProposalDoc
@@ -39,11 +40,18 @@ from stockmanager.jobs.common import (
 )
 from stockmanager.llm.summary import SummaryError
 from stockmanager.notify.deliver import Channel, deliver_pending
-from stockmanager.notify.outbox import DEFAULT_CHANNELS, ChannelState, prepare
+from stockmanager.notify.outbox import DEFAULT_CHANNELS, Alert, ChannelState, Severity, prepare
 from stockmanager.notify.templates import digest_alert
 from stockmanager.outcomes.models import describe, hit_rate
 from stockmanager.outcomes.scoring import load_scores
 from stockmanager.pricing.errors import PriceError, ValuationUnavailable
+from stockmanager.reporting import (
+    describe_noise,
+    describe_trend,
+    hit_rate_trend,
+    noise_ratio,
+    veto_rate_trend,
+)
 from stockmanager.store import FileStore
 from stockmanager.store.lock import Clock
 from stockmanager.triage.quiet import QuietHours
@@ -237,7 +245,7 @@ def run_digest(
         raise SummaryError(f"digest: all {wanted} summaries failed")
 
     narrative = _narrative(store, config, moves, today, reasoner_outputs, s4_join)
-    lines = [*summaries, *_weekly_outcomes_line(store, today)]
+    lines = [*summaries, *_weekly_outcomes_line(store, today), *_weekly_metric_lines(store, today)]
     alert = digest_alert(lines) if lines or narrative.text else None
     if alert is not None and narrative.text:
         alert.body = f"{alert.body}\n\n{narrative.text}" if lines else narrative.text
@@ -264,6 +272,40 @@ def _weekly_outcomes_line(store: FileStore, today: date) -> list[str]:
         return []
     scores = load_scores(store.root)
     return [describe(hit_rate(scores))] if scores else []
+
+
+def stored_alert_severities(root: Path, today: date) -> list[Severity]:
+    """Severities of the stored alerts (pending, sent, dead) that occurred in the 7 days up to ``today``."""
+    since = today - timedelta(days=7)
+    out: list[Severity] = []
+    for state in ("pending", "sent", "dead"):
+        for path in sorted((root / "alerts" / state).glob("*.json")):
+            try:
+                alert = Alert.from_json(path.read_text(encoding="utf-8"))
+            except (ValueError, KeyError):
+                continue
+            if alert.occurred_at is not None and since < alert.occurred_at.date() <= today:
+                out.append(alert.severity)
+    return out
+
+
+def _weekly_metric_lines(store: FileStore, today: date) -> list[str]:
+    """M3 noise ratio and M4 alignment proxy (veto-rate trend beside hit-rate trend), Friday digest only.
+
+    Silent when nothing at all is stored (no alerts, proposals or scores): an all-"none yet" digest would be noise.
+    """
+    if today.weekday() != FRIDAY:
+        return []
+    noise = noise_ratio(stored_alert_severities(store.root, today))
+    vetoes = veto_rate_trend(store.load_proposals())
+    hits = hit_rate_trend(load_scores(store.root))
+    if not (noise.total or vetoes.series or hits.series):
+        return []
+    return [
+        describe_noise(noise),
+        describe_trend("Veto-rate (by proposal created date)", "proposals", vetoes),
+        describe_trend("Hit-rate (90d, by fill date)", "scored trades", hits),
+    ]
 
 
 def _deliver(store: FileStore, channels: Sequence[Channel], clock: Clock, config: Config) -> None:

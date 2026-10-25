@@ -246,10 +246,55 @@ def test_s4_join_is_inert() -> None:
 def test_s4_join_does_not_change_the_digest(store: FileStore, clock: FixedClock) -> None:
     write_facts(store, fact("f1"))
     run(store, clock)
+    first = pending(store)[0]
+    # the first digest is itself a stored alert and would switch on the weekly metric lines for the second run
+    for path in (store.root / "alerts" / "pending").glob("*.json"):
+        path.unlink()
     reset_last_close(store)
     run(store, clock, s4_join={"MSFT": "x"})
-    first, second = pending(store)
+    (second,) = pending(store)
     assert first.body == second.body and first.fields == second.fields
+
+
+# -- weekly metrics (M3, M4) ---------------------------------------------------------------------------------------
+
+
+def stored_alert(store: FileStore, alert_id: str, severity: str, when: datetime) -> None:
+    alert = Alert("k", severity, "t", "b", {}, [], False, None, {}, alert_id=alert_id, occurred_at=when)  # type: ignore[arg-type]
+    (store.root / "alerts" / "pending" / f"{alert_id}.json").write_text(alert.to_json())
+
+
+def write_proposals(store: FileStore, *docs: Any) -> None:
+    (store.root / "proposals").mkdir(exist_ok=True)
+    for doc in docs:
+        store.save_proposal(doc.proposal_id, doc)
+
+
+def test_weekly_digest_renders_noise_veto_and_hit_rate_lines(store: FileStore, clock: FixedClock) -> None:
+    stored_alert(store, "a1", "alert", at(8))
+    stored_alert(store, "a2", "info", at(9))
+    stored_alert(store, "a3", "positive", at(10))
+    stored_alert(store, "a4", "info", at(11))
+    stored_alert(store, "old", "alert", at(8) - timedelta(days=30))  # outside the 7-day window
+    write_proposals(
+        store,
+        vetoed("P-2026-10-22-01", "AAPL").model_copy(update={"created_at": at(7) - timedelta(days=1)}),
+        make_proposal("P-2026-10-22-02", state="PROPOSED", created_at=at(7) - timedelta(days=1)),
+        make_proposal("P-2026-10-23-01", state="PROPOSED", created_at=at(7)),
+    )
+    lines = run(store, clock)
+    body = pending(store)[0].body
+    assert "Noise ratio: 25.0000% (1 of 4 alerts needed action; target < 20%)." in body
+    assert "Veto-rate (by proposal created date) trend: down, 0.0000% on 2026-10-23 (0 of 1) vs 50.0000%" in body
+    assert "Hit-rate (90d, by fill date) trend: no scored trades yet." in body
+    assert len(lines) == 2  # the per-ticker summaries are unchanged
+
+
+def test_weekly_metrics_are_friday_only(store: FileStore, clock: FixedClock) -> None:
+    stored_alert(store, "a1", "alert", at(8) - timedelta(days=1))
+    clock.now = at(13, 30) - timedelta(days=1)  # Thursday
+    run(store, clock)
+    assert all("Noise ratio" not in a.body for a in pending(store))
 
 
 # -- quiet hours and delivery --------------------------------------------------------------------------------------
