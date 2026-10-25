@@ -42,6 +42,14 @@ class TriageConfig(BaseModel):
     benchmark_batch_p95_seconds: float = Field(default=60.0, gt=0)
     benchmark_max_fp_rate: float = Field(default=0.10, ge=0, le=1)
     benchmark_max_noise_ratio: float = Field(default=0.20, ge=0, le=1)
+    #: The LLM classifier endpoint (``triage.llm_classifier``): an OpenAI-compatible server. Empty means none is
+    #: configured and the adapter fails closed (R4). The API key is never configured here, only the env var holding it.
+    classifier_base_url: str = ""
+    classifier_model: str = ""
+    classifier_api_key_env: str = Field(default="TRIAGE_API_KEY", pattern=r"^[A-Z][A-Z0-9_]*$")
+    classifier_timeout_s: float = Field(default=30.0, gt=0, le=300)
+    #: Must exceed the model's reasoning length: the answer follows the reasoning (R14).
+    classifier_max_tokens: int = Field(default=2048, ge=64, le=32768)
 
     @property
     def escalation_live(self) -> bool:
