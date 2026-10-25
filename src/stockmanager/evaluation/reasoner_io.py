@@ -14,6 +14,9 @@ from typing import Annotated, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from stockmanager.domain.docs import NewsEvent
+from stockmanager.notify.outbox import Severity
+from stockmanager.prefs.prefs import MAX_PREFS, Scope, Ticker
+from stockmanager.triage.models import EventKind
 
 
 def _decimal_string(value: str) -> str:
@@ -186,6 +189,56 @@ class OutcomesSection(_IO):
     stats: OutcomeStats | None = None
 
 
+class ConstraintRecord(_IO):
+    """One durable owner constraint (S4): enumerated fields only, no free text, no provenance beyond the date set."""
+
+    kind: EventKind
+    ticker: Ticker
+    scope: Scope
+    severity: Severity
+    set_on: dt.date
+
+
+class ConstraintsSection(_IO):
+    """The owner's stored constraints, newest first, capped at ``MAX_PREFS``; ``stored`` counts all of them.
+
+    A ``stored`` above ``len(records)`` tells the model the list is truncated. Applied every cycle; system-held data.
+    """
+
+    stored: int = 0
+    records: list[ConstraintRecord] = Field(default_factory=list, max_length=MAX_PREFS)
+
+
+#: Cap on per-scope / per-ticker rows in the veto pattern block.
+MAX_VETO_PATTERN_ROWS = 10
+
+
+class VetoPatternRow(_IO):
+    """Veto count for one ``scope`` (``buy``/``sell``) or one ticker; ``veto_rate_pct`` is ``None`` while provisional."""
+
+    dimension: Literal["scope", "ticker"]
+    value: str
+    vetoed: int
+    total: int
+    provisional: bool
+    veto_rate_pct: DecStr | None
+
+
+class VetoPatternSection(_IO):
+    """Veto stats over the FULL stored veto history, not the last ``MAX_VETOES`` (S4). Deterministic, no LLM.
+
+    ``provisional`` is true below ``min_sample`` decided proposals: counts only, ``veto_rate_pct`` is ``None``. Each
+    row applies the same gate to its own sample.
+    """
+
+    provisional: bool = True
+    min_sample: int = 10
+    decided: int = 0
+    vetoed: int = 0
+    veto_rate_pct: DecStr | None = None
+    rows: list[VetoPatternRow] = Field(default_factory=list, max_length=MAX_VETO_PATTERN_ROWS)
+
+
 class ReasonerInput(_IO):
     """Everything the Reasoner sees, built from validated, persisted data. There is no raw-news field."""
 
@@ -201,6 +254,8 @@ class ReasonerInput(_IO):
     facts: list[FactProjection]
     veto_history: list[VetoRecord] = Field(max_length=MAX_VETOES)
     outcomes: OutcomesSection
+    constraints: ConstraintsSection
+    veto_patterns: VetoPatternSection
 
 
 # -- output ------------------------------------------------------------------------------------------------------

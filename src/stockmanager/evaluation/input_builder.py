@@ -18,7 +18,10 @@ from stockmanager.domain import metrics
 from stockmanager.domain.docs import PortfolioDoc, PriceTable
 from stockmanager.evaluation.reasoner_io import (
     MAX_OUTCOME_RECORDS,
+    MAX_VETO_PATTERN_ROWS,
     BenchmarkSnapshot,
+    ConstraintRecord,
+    ConstraintsSection,
     FactProjection,
     OutcomeRecord,
     OutcomesSection,
@@ -30,11 +33,15 @@ from stockmanager.evaluation.reasoner_io import (
     RiskMetrics,
     SectorWeight,
     VetoLeg,
+    VetoPatternRow,
+    VetoPatternSection,
     VetoRecord,
 )
 from stockmanager.news import NewsResult
 from stockmanager.outcomes.models import GATE_HORIZON, hit_rate
 from stockmanager.outcomes.scoring import load_scores
+from stockmanager.prefs import MAX_PREFS, active_prefs, load_prefs
+from stockmanager.reporting import veto_pattern_stats
 from stockmanager.store import FileStore
 
 MAX_VETOES = 10
@@ -121,6 +128,41 @@ def _outcomes_section(store: FileStore) -> OutcomesSection:
     )
 
 
+def _constraints_section(store: FileStore) -> ConstraintsSection:
+    """The owner's stored constraints (S4): the ``MAX_PREFS`` newest, enumerated fields only, every cycle."""
+    stored = load_prefs(store.root)
+    return ConstraintsSection(
+        stored=len(stored),
+        records=[
+            ConstraintRecord(kind=p.kind, ticker=p.ticker, scope=p.scope, severity=p.severity, set_on=p.set_at.date())
+            for p in active_prefs(stored, MAX_PREFS)
+        ],
+    )
+
+
+def _veto_patterns(store: FileStore) -> VetoPatternSection:
+    """Veto rate by scope and ticker over every stored proposal (S4), not just the ``MAX_VETOES`` window."""
+    stats = veto_pattern_stats(store.load_proposals())
+    return VetoPatternSection(
+        provisional=stats.provisional,
+        min_sample=stats.min_sample,
+        decided=stats.total,
+        vetoed=stats.vetoed,
+        veto_rate_pct=str(stats.rate_pct) if stats.rate_pct is not None else None,
+        rows=[
+            VetoPatternRow(
+                dimension=r.dimension,
+                value=r.value,
+                vetoed=r.vetoed,
+                total=r.total,
+                provisional=r.provisional,
+                veto_rate_pct=str(r.rate_pct) if r.rate_pct is not None else None,
+            )
+            for r in stats.rows[:MAX_VETO_PATTERN_ROWS]
+        ],
+    )
+
+
 ReasonerInputBuilder = Callable[[str, PortfolioDoc, PriceTable, NewsResult, Config], ReasonerInput]
 
 
@@ -194,6 +236,8 @@ def make_reasoner_input_builder(store: FileStore) -> ReasonerInputBuilder:
             facts=[FactProjection.model_validate(f.for_reasoner()) for f in news.facts],
             veto_history=_veto_history(store),
             outcomes=_outcomes_section(store),
+            constraints=_constraints_section(store),
+            veto_patterns=_veto_patterns(store),
         )
 
     return build

@@ -59,9 +59,12 @@ class ReasonerPrompt:
         """Render the user message; each structured block becomes ``tojson(indent=2)`` of the JSON-mode dump."""
         data = input.model_dump(mode="json")
         text = self.user_template.render(**data)
-        # The outcomes block is added here rather than in ``user.md.j2`` so the sha256-pinned template is unchanged. Same
+        # The outcomes, constraints (S4) and veto-pattern (S4) blocks are added here rather than in ``user.md.j2`` so the sha256-pinned template is unchanged. Same
         # isolation as the other blocks: a quarantined tag around the JSON-mode dump of a typed, system-computed model.
-        block = f"<outcomes>\n{xe(json.dumps(data['outcomes'], indent=2, ensure_ascii=False))}\n</outcomes>"
+        block = "\n\n".join(
+            f"<{name}>\n{xe(json.dumps(data[name], indent=2, ensure_ascii=False))}\n</{name}>"
+            for name in ("outcomes", "constraints", "veto_patterns")
+        )
         marker = "</recent_vetoes>"
         if marker in text:
             return text.replace(marker, f"{marker}\n\n{block}", 1)

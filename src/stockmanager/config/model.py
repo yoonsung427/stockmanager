@@ -3,6 +3,12 @@
 This is intentionally a subset of the full configuration surface described in the architecture spec: enough to
 drive authorization, ``SET`` and the notification catalogue. ``ops.*``, ``llm.*``, ``news.*`` and ``summary.*`` stay as their own
 config models (``config/proposals.py``, ``config/llm.py``) and are never reachable through ``SET``.
+
+``SET`` policy (owner decision 2026-10-24, superseding R1): ``SETTABLE_KEYS`` is the whole SET surface. It now holds
+four ``triage.*`` materiality gates (see ``config/triage.py``) and ``prefs`` (durable constraints,
+``workspace/prefs.py``). ``triage.enabled``, ``triage.shadow_mode``, ``triage.benchmark_passed`` and ``triage.benchmark_*``
+are deliberately absent: production enable is gated by the shadow window and the benchmark, so it is a file edit.
+Every other namespace stays in ``BLOCKED_SET_PREFIXES``. A successful ``SET`` is persisted to ``config.yaml``.
 """
 
 from __future__ import annotations
@@ -126,8 +132,25 @@ SETTABLE_KEYS: frozenset[str] = frozenset(
         "risk_free_rate_annual",
         "price_source_primary",
         "price_source_fallback",
+        # Owner decision 2026-10-24: triage materiality gates (values validated by ``TriageConfig`` fields).
+        "triage.confidence_threshold",
+        "triage.quiet_hours",
+        "triage.max_escalations_per_day",
+        "triage.dedupe_window_hours",
+        # Durable preference constraints: not a ``Config`` field, handled by ``workspace.prefs`` (enumerated schema).
+        "prefs",
     }
 )
 
 # Namespaces that are file-edit only and must never be reachable via SET, even with a dotted key.
-BLOCKED_SET_PREFIXES: tuple[str, ...] = ("ops.", "llm.", "news.", "discord.", "summary.", "triage.")
+BLOCKED_SET_PREFIXES: tuple[str, ...] = ("ops.", "llm.", "news.", "discord.", "summary.")
+# ``triage.`` is mixed: only the keys listed in SETTABLE_KEYS are reachable. Everything else under it (enable flags,
+# benchmark_*) is file-edit only, so ``is_file_edit_only`` also covers it.
+_PARTLY_SETTABLE_PREFIXES: tuple[str, ...] = ("triage.",)
+
+
+def is_file_edit_only(key: str) -> bool:
+    """True if ``key`` is in a blocked namespace, or is a ``triage.*`` key not listed in ``SETTABLE_KEYS``."""
+    if key.startswith(BLOCKED_SET_PREFIXES):
+        return True
+    return key.startswith(_PARTLY_SETTABLE_PREFIXES) and key not in SETTABLE_KEYS

@@ -13,13 +13,14 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
 from pydantic import ValidationError
 
 from stockmanager.commands.auth import Sender, actor, authorize
 from stockmanager.commands.confirm import SigningKey, annotate_cause, check_assistant
 from stockmanager.commands.parser import PROPOSAL_ID_RE, parse_command
 from stockmanager.commands.ratelimit import RATE_LIMITED, RateLimiter, limiter_key
-from stockmanager.config import BLOCKED_SET_PREFIXES, SETTABLE_KEYS, Config
+from stockmanager.config import SETTABLE_KEYS, Config, is_file_edit_only
 from stockmanager.domain import ids as domain_ids
 from stockmanager.domain.docs import ProposalDoc
 from stockmanager.domain.proposal_state import GENESIS_HASH, ProposalState, can_transition, chain_hash, is_terminal
@@ -27,6 +28,7 @@ from stockmanager.domain.timeutil import add_elapsed
 from stockmanager.execution.engine import ExecutionEngine
 from stockmanager.notify import prepare as prepare_alert
 from stockmanager.notify.templates import system_pause_resume
+from stockmanager.prefs.prefs import MAX_PREFS, PrefError, Source, active_prefs, apply_set, dump_prefs, load_prefs
 from stockmanager.store import FileStore, fsutil
 from stockmanager.store.lock import PT, LockBusy
 from stockmanager.store.reconcile import format_log_line
@@ -41,6 +43,8 @@ if TYPE_CHECKING:
 
 MAX_MESSAGE_CHARS = 2000
 CLOSE_CONFIRM_WINDOW = timedelta(minutes=10)
+CONFIG_FILENAME = "config.yaml"
+PREFS_FILENAME = "preferences.json"
 
 
 #: The reply ``handle`` gives text that is not a command; the Discord bot tries stock queries on exactly this.
@@ -443,6 +447,17 @@ def cmd_status(ctx: CommandContext, sender: Sender) -> str:
         lines += [f"  {p.proposal_id} state={p.state} execute_at={p.execute_at.isoformat()}" for p in pending]
     else:
         lines.append("pending proposals: none")
+    stored = load_prefs(ctx.store.root)
+    if stored:
+        lines.append("constraints:")
+        lines += [
+            f"  {p.kind.value} {p.ticker} {p.scope} {p.severity} (set {p.set_at:%Y-%m-%d} by {p.source})"
+            for p in active_prefs(stored, MAX_PREFS)
+        ]
+        if len(stored) > MAX_PREFS:
+            lines.append(f"  (+{len(stored) - MAX_PREFS} older, not shown to the reasoner)")
+    else:
+        lines.append("constraints: none")
     return "\n".join(lines)
 
 
@@ -450,10 +465,15 @@ def cmd_status(ctx: CommandContext, sender: Sender) -> str:
 
 
 def cmd_set(ctx: CommandContext, key: str | None, value: str | None, sender: Sender) -> str:
-    """``SET <key> <value>``: only keys in ``SETTABLE_KEYS`` (plus ``start_cash`` while ``STAGED``), AS §3.6."""
+    """``SET <key> <value>``: only keys in ``SETTABLE_KEYS`` (plus ``start_cash`` while ``STAGED``), AS §3.6.
+
+    A config change is validated by ``Config`` (so ``triage.*`` values go through ``TriageConfig`` field validation),
+    then written to ``config.yaml`` in the same store transaction; ``SET prefs`` writes ``preferences.json``
+    (``src/stockmanager/prefs/prefs.py``). Policy for which keys are reachable: ``config/model.py``.
+    """
     if not key or value is None:
         return "❌ SET needs a key and a value, e.g. SET max_position_pct 25"
-    if key.startswith(BLOCKED_SET_PREFIXES):
+    if is_file_edit_only(key):
         return f"❌ {key} is file-edit only and cannot be changed with SET"
     if key != "start_cash" and key not in SETTABLE_KEYS:
         return f"❌ {key} cannot be changed with SET"
@@ -461,15 +481,50 @@ def cmd_set(ctx: CommandContext, key: str | None, value: str | None, sender: Sen
         with ctx.store.transaction("cmd:set") as txn:
             if key == "start_cash":
                 txn.require(status="STAGED")
-            dumped = ctx.cfg.model_dump(mode="json")
-            dumped[key] = value
-            try:
-                new_cfg = Config.model_validate(dumped)
-            except ValidationError as exc:
-                return f"❌ Invalid value for {key}: {exc.errors()[0]['msg']}"
-            ctx.cfg = new_cfg
+            if key == "prefs":
+                return _set_prefs(ctx, txn, value, sender)
+            return _set_config(ctx, txn, key, value)
     except GateError as exc:
         return f"❌ {exc}"
     except LockBusy:
         return "❌ System busy"
+
+
+def _set_prefs(ctx: CommandContext, txn: Transaction, value: str, sender: Sender) -> str:
+    """Add or remove one constraint. ``source`` is ``bridge`` for a confirmed assistant proposal, else ``owner``."""
+    source: Source = "bridge" if sender.kind == "assistant" else "owner"
+    try:
+        updated = apply_set(load_prefs(ctx.store.root), value, now=sender.sent_at.astimezone(PT), source=source)
+    except PrefError as exc:
+        return f"❌ Invalid preference: {exc}"
+    txn.stage_workspace_files({PREFS_FILENAME: dump_prefs(updated)})
+    return f"✅ Set prefs = {value}"
+
+
+def _set_config(ctx: CommandContext, txn: Transaction, key: str, value: str) -> str:
+    """Validate ``key = value`` against ``config.yaml`` as it is on disk, stage the file, and adopt the result.
+
+    Only the one key changes; everything else in the file (including file-edit-only flags edited since this process
+    loaded its config) is carried through untouched. An invalid current file is never overwritten.
+    """
+    path = ctx.store.root / CONFIG_FILENAME
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else ctx.cfg.model_dump(mode="json")
+        data = {} if data is None else data
+        if not isinstance(data, dict):
+            raise TypeError("not a mapping")
+        Config.model_validate(data)
+    except (OSError, yaml.YAMLError, UnicodeDecodeError, TypeError, ValidationError):
+        return f"❌ {CONFIG_FILENAME} is invalid; fix it before using SET"
+    table, _, field = key.rpartition(".")
+    target = data.setdefault(table, {}) if table else data
+    target[field] = value
+    try:
+        new_cfg = Config.model_validate(data)
+    except ValidationError as exc:
+        return f"❌ Invalid value for {key}: {exc.errors()[0]['msg']}"
+    typed = new_cfg.model_dump(mode="json")
+    target[field] = typed[table][field] if table else typed[field]
+    txn.stage_workspace_files({CONFIG_FILENAME: yaml.safe_dump(data, sort_keys=False, allow_unicode=True)})
+    ctx.cfg = new_cfg
     return f"✅ Set {key} = {value}"
