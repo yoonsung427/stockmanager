@@ -109,13 +109,19 @@ def test_edge03_a_week_asleep_gives_one_late_run_not_seven(world: World) -> None
     ],
 )
 def test_edge01_edge14_valuation_uses_the_last_completed_session(world: World, at: datetime, expected: date) -> None:
-    """TS EDGE-01 / EDGE-14: a Saturday evaluation prices Friday's (or the last real) close. Yahoo has no Saturday bar."""
+    """TS EDGE-01 / EDGE-14: a Saturday evaluation prices Friday's (or the last real) close. Yahoo has no Saturday bar.
+
+    Outcome scoring (D5) legitimately fetches past horizon sessions through the same seam, so the assertion scopes to
+    the claim EDGE-01/14 actually makes: the last completed session was fetched and nothing beyond it was.
+    """
     world.seed()
     world.calendar.holidays = world.calendar.holidays | {date(2026, 12, 25)}  # CAL-2026-27: Christmas is closed
     world.clock.set(at)
     slot = ScheduleSlot(slot_time=at, cycle_id=at.date().isoformat(), late=False)
     world.evaluation(StubReasoner(hold_output())).run(slot, Config())
-    assert {d for _t, d, _k in world.yahoo.calls} == {expected}
+    dates = {d for _t, d, _k in world.yahoo.calls}
+    assert expected in dates  # the valuation fetch itself used the last completed session
+    assert max(dates) == expected  # no fetch for a future (or Saturday) bar
 
 
 # -- late delivery, fill window and expiry (EDGE-04..06, EDGE-17, EDGE-18) ------------------------------------------------

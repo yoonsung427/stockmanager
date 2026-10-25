@@ -115,6 +115,18 @@ class Trade:
 
 
 @dataclass(frozen=True)
+class OutcomesSummary:
+    """Hit-rate section (O2): 90-day counts always, the percentage only once not provisional (R12)."""
+
+    scored: int = 0
+    wins: int = 0
+    min_scored: int = 10
+    provisional: bool = True
+    hit_rate_pct: Decimal | None = None
+    trends: list[tuple[int, int, Decimal | None]] = field(default_factory=list)  # (horizon days, scored, mean excess %)
+
+
+@dataclass(frozen=True)
 class DashboardModel:
     """Everything the dashboard renders, in one serializable snapshot (AS §9.3)."""
 
@@ -159,3 +171,6 @@ class DashboardModel:
     status: str
     auto_approve: bool
     pending_proposals: list[PendingProposal]
+
+    # Outcomes
+    outcomes: OutcomesSummary = field(default_factory=OutcomesSummary)

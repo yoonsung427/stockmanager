@@ -21,6 +21,7 @@ from stockmanager.dashboard.model import (
     EvaluationSummary,
     NAVPoint,
     NewsFact,
+    OutcomesSummary,
     PendingProposal,
     PositionRow,
     RiskSummary,
@@ -29,6 +30,8 @@ from stockmanager.dashboard.model import (
 )
 from stockmanager.domain.docs import PortfolioDoc, ProposalDoc
 from stockmanager.domain.money import q4
+from stockmanager.outcomes.models import hit_rate
+from stockmanager.outcomes.scoring import load_scores
 from stockmanager.store import FileStore
 from stockmanager.store.lock import Clock
 
@@ -121,6 +124,19 @@ def build_dashboard(store: FileStore, clock: Clock) -> DashboardModel:
         status=portfolio.status,
         auto_approve=bool(portfolio.config.get("auto_approve", True)),
         pending_proposals=pending_proposals,
+        outcomes=_outcomes_summary(store),
+    )
+
+
+def _outcomes_summary(store: FileStore) -> OutcomesSummary:
+    rate = hit_rate(load_scores(store.root))
+    return OutcomesSummary(
+        scored=rate.scored,
+        wins=rate.wins,
+        min_scored=rate.min_scored,
+        provisional=rate.provisional,
+        hit_rate_pct=rate.hit_rate_pct,
+        trends=[(t.horizon_days, t.scored, t.mean_excess_pct) for t in rate.trends],
     )
 
 

@@ -32,6 +32,8 @@ from stockmanager.news import NewsResult
 from stockmanager.notify.emit import emit_reconcile_divergence, emit_run_skipped_busy
 from stockmanager.notify.outbox import prepare, raised_dedupe_keys
 from stockmanager.notify.templates import evaluation_complete, news_unavailable, veto_window_open
+from stockmanager.outcomes.models import SCORES_FILE, OutcomeScore
+from stockmanager.outcomes.scoring import dump_scores, load_scores, score_matured
 from stockmanager.pricing.errors import ValuationUnavailable
 from stockmanager.pricing.service import PriceService
 from stockmanager.scheduler.scheduler import ScheduleSlot
@@ -140,6 +142,26 @@ class EvaluationEngine:
         self._build_input = build_reasoner_input
         self._prices = PriceService()
 
+    def _score_outcomes(self, snapshot: PortfolioDoc, cfg: Config) -> list[OutcomeScore]:
+        """Phase B (lock-free): scores for fills whose 30/60/90-day horizon has matured since the last cycle (O1).
+
+        Never fails the cycle: a pricing problem leaves the pair unscored and the next cycle retries it.
+        """
+        try:
+            return score_matured(
+                snapshot.trades,
+                load_scores(self._store.root),
+                benchmark=cfg.benchmark,
+                now=self._clock(),
+                calendar=self._calendar,
+                prices=self._prices,
+                primary=self._primary,
+                fallback=self._fallback,
+            )
+        except Exception:  # noqa: BLE001 - scoring failure must never stop the cycle (D5/R4)
+            _log.exception("outcome scoring failed; the cycle continues")
+            return []
+
     def run(self, slot: ScheduleSlot, cfg: Config) -> RunResult:
         """Run one cycle for ``slot`` under ``cfg`` (AS §1.2 phases A-D)."""
         # Phase A: snapshot, no lock.
@@ -172,6 +194,8 @@ class EvaluationEngine:
             valuation = self._prices.valuation(tickers, valuation_date, self._primary, self._fallback)
         except ValuationUnavailable as exc:
             return RunResult("failed_closed", str(exc))
+
+        outcome_scores = self._score_outcomes(snapshot, cfg)
 
         news = self._news_runner(slot.cycle_id, snapshot)
         builder = ProposalBuilder(self._calendar, self._verifier)
@@ -228,6 +252,10 @@ class EvaluationEngine:
                         )
                 if staged:
                     txn.stage_proposals(staged)
+                if outcome_scores:
+                    txn.stage_extras(
+                        eval_docs={SCORES_FILE: dump_scores([*load_scores(self._store.root), *outcome_scores])}
+                    )
 
                 # Phase D: report -- alerts are enqueued in the same commit (AS §1.2 step 8).
                 alerts: dict[str, str] = {}
