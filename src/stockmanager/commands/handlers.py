@@ -8,15 +8,17 @@ directly except the small non-books state file ``state/pending_close.json`` that
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
-from stockmanager.commands.auth import Sender, authorize
+from stockmanager.commands.auth import Sender, actor, authorize
+from stockmanager.commands.confirm import SigningKey, annotate_cause, check_assistant
 from stockmanager.commands.parser import PROPOSAL_ID_RE, parse_command
+from stockmanager.commands.ratelimit import RATE_LIMITED, RateLimiter, limiter_key
 from stockmanager.config import BLOCKED_SET_PREFIXES, SETTABLE_KEYS, Config
 from stockmanager.domain import ids as domain_ids
 from stockmanager.domain.docs import ProposalDoc
@@ -47,7 +49,11 @@ UNRECOGNIZED = "❌ Unrecognized command"
 
 @dataclass
 class CommandContext:
-    """What a handler needs to act: the store, the live config, time, and the price/calendar seams."""
+    """What a handler needs to act: the store, the live config, time, and the price/calendar seams.
+
+    ``rate_limiter`` is the one command budget (v2 D2): every sender kind draws on it inside ``handle``.
+    ``bridge_key`` verifies assistant confirm tokens; without it no assistant command that changes state can run.
+    """
 
     store: FileStore
     cfg: Config
@@ -55,20 +61,28 @@ class CommandContext:
     calendar: SessionCalendar
     price_provider: PriceProvider
     price_fallback: PriceProvider | None = None  # ``None``: the primary is retried in its place
+    rate_limiter: RateLimiter = field(default_factory=RateLimiter)
+    bridge_key: SigningKey | None = field(default=None, repr=False)
 
 
-def run_command(text: str, sender: Sender, ctx: CommandContext) -> str:
+def run_command(text: str, sender: Sender, ctx: CommandContext, *, confirm_token: str | None = None) -> str:
     """Process-agnostic command entry (v2 bot/scheduler split): everything comes from ``ctx``, nothing from a bot.
 
     Safe to call from the bot process or the scheduler process: the handlers read and write only through
     ``ctx.store`` (transactions under ``portfolio.lock``), so either process can run a command while the other is
-    down or restarting. Transport concerns (rate limits, the backfill cursor, replies) stay in the caller.
+    down or restarting. Transport concerns (the backfill cursor, replies) stay in the caller; the rate limit does not.
     """
-    return handle(text, sender, ctx)
+    return handle(text, sender, ctx, confirm_token=confirm_token)
 
 
-def handle(text: str, sender: Sender, ctx: CommandContext) -> str:
-    """Parse, authorize, and execute a command. Always returns a reply string (TS CMD-X01)."""
+def handle(text: str, sender: Sender, ctx: CommandContext, *, confirm_token: str | None = None) -> str:
+    """Rate-limit, parse, authorize, and execute a command. Always returns a reply string (TS CMD-X01).
+
+    Typed, assistant and CLI commands share one budget per user (``RateLimiter``). An ``assistant`` sender also needs a
+    confirm token for anything but the allow-listed verbs (``confirm.check_assistant``, v2 D2).
+    """
+    if ctx.rate_limiter.limited(limiter_key(sender), ctx.clock()):
+        return RATE_LIMITED
     normalized = text.strip()
     if len(normalized) > MAX_MESSAGE_CHARS:
         return "❌ Message too long"
@@ -78,6 +92,10 @@ def handle(text: str, sender: Sender, ctx: CommandContext) -> str:
     auth = authorize(sender, parsed, ctx.cfg)
     if not auth.ok:
         return f"❌ {auth.reason}"
+    if sender.kind == "assistant":
+        refusal = check_assistant(parsed, normalized, sender, confirm_token, ctx)
+        if refusal is not None:
+            return f"❌ {refusal}"
     if parsed.verb == "VETO":
         return cmd_veto(ctx, parsed.target, parsed.reason, sender)
     if parsed.verb == "APPROVE":
@@ -107,7 +125,12 @@ def handle(text: str, sender: Sender, ctx: CommandContext) -> str:
 
 
 def _actor(sender: Sender) -> str:
-    return "cli" if sender.kind == "cli" else f"discord:{sender.user_id}"
+    return actor(sender)
+
+
+def _cause(ctx: CommandContext, sender: Sender, cause: str) -> str:
+    """``cause`` for a chain entry; assistant-driven ones also name the confirm ref and the confirming user."""
+    return annotate_cause(ctx.store.root, sender, cause)
 
 
 def _genesis_transition(at: datetime, actor: str, cause: str) -> TransitionRecord:
@@ -168,7 +191,7 @@ def cmd_veto(ctx: CommandContext, proposal_id: str | None, reason: str | None, s
                 return f"❌ No such proposal: {proposal_id}"
             if not can_transition(doc.state, "VETOED"):
                 return f"❌ Cannot VETO {proposal_id}: it is {doc.state}"
-            new_doc = _transition(doc, "VETOED", _actor(sender), reason or "vetoed", sender.sent_at)
+            new_doc = _transition(doc, "VETOED", _actor(sender), _cause(ctx, sender, reason or "vetoed"), sender.sent_at)
             txn.stage_proposals({proposal_id: new_doc})
     except LockBusy:
         return "❌ System busy"
@@ -190,7 +213,7 @@ def cmd_approve(ctx: CommandContext, proposal_id: str | None, sender: Sender) ->
                 return f"❌ Cannot APPROVE {proposal_id}: it is {doc.state}"
             if sender.sent_at >= doc.execute_at:
                 return f"❌ Cannot APPROVE {proposal_id}: its execution time has passed"
-            new_doc = _transition(doc, "APPROVED", _actor(sender), "approved", sender.sent_at)
+            new_doc = _transition(doc, "APPROVED", _actor(sender), _cause(ctx, sender, "approved"), sender.sent_at)
             txn.stage_proposals({proposal_id: new_doc})
     except LockBusy:
         return "❌ System busy"
@@ -233,7 +256,7 @@ def cmd_pause(ctx: CommandContext, sender: Sender) -> str:
             for doc in _load_all_proposals(ctx.store):
                 if is_terminal(doc.state):
                     continue
-                staged[doc.proposal_id] = _transition(doc, "CANCELLED_PAUSED", _actor(sender), "system paused", now)
+                staged[doc.proposal_id] = _transition(doc, "CANCELLED_PAUSED", _actor(sender), _cause(ctx, sender, "system paused"), now)
                 cancelled.append(doc.proposal_id)
             txn.stage_portfolio(txn.state.model_copy(update={"status": "PAUSED"}))
             txn.stage_proposals(staged)
