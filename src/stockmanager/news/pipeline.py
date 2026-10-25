@@ -118,24 +118,33 @@ class _FetchStage:
 
 
 def _capture_fetch_log(store: FileStore, cycle_id: str, results: Sequence[QueryResult], fetched_at: datetime) -> None:
-    """Persist one ``fetch-log`` row per raw fetched item (v2 design D8); never raises.
+    """Persist one ``fetch-log`` row per UNIQUE raw fetched item per cycle (v2 design D8); never raises.
+
+    Rows are deduplicated by ``item_hash`` here, keeping the first occurrence in ``results`` order, so duplicate
+    hashes are prevented at capture and ``load_corpus``'s fail-closed duplicate rule can never fire on a live capture.
 
     fetch-log content is untrusted data for labeling only, never re-ingested as instruction, and the
     ``RawItem.__repr__`` redaction must not be bypassed by logging raw text anywhere else.
     """
-    rows = [
-        {
-            "cycle_id": cycle_id,
-            "item_hash": item_hash(item.url),
-            "source": result.adapter,
-            "url": item.url,
-            "raw_title": item.title,
-            "raw_snippet": item.snippet,
-            "fetched_at": fetched_at.isoformat(),
-        }
-        for result in results
-        for item in result.items
-    ]
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for result in results:
+        for item in result.items:
+            h = item_hash(item.url)
+            if h in seen:
+                continue
+            seen.add(h)
+            rows.append(
+                {
+                    "cycle_id": cycle_id,
+                    "item_hash": h,
+                    "source": result.adapter,
+                    "url": item.url,
+                    "raw_title": item.title,
+                    "raw_snippet": item.snippet,
+                    "fetched_at": fetched_at.isoformat(),
+                }
+            )
     try:
         if not store.save_fetch_log(cycle_id, rows):
             log.info("fetch-log for %s already exists; not rewritten", cycle_id)

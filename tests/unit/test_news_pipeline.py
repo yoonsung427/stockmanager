@@ -409,6 +409,21 @@ def test_fetch_log_has_one_complete_row_per_fetched_item(store: FileStore) -> No
         assert row["raw_title"] and row["fetched_at"] == clock().isoformat()
 
 
+def test_fetch_log_keeps_one_row_per_unique_url_first_occurrence(store: FileStore) -> None:
+    shared = "https://news.example.com/shared"
+
+    def overlapping(q: NewsQuery) -> list[Any]:
+        return [raw(title=f"{q.ticker} {q.kind} first", url=shared), *article(q)]
+
+    result = run(store, [FakeFetcher("searxng", overlapping)])
+    rows = fetch_log_rows(store)
+    hashes = [r["item_hash"] for r in rows]
+    assert result.stats.fetched_items > len(rows) and len(set(hashes)) == len(hashes)
+    assert [r["url"] for r in rows].count(shared) == 1
+    assert rows[0]["url"] == shared and rows[0]["raw_title"].endswith(" first")
+    assert [r["url"] for r in rows[1:]] == [u for u in dict.fromkeys(r["url"] for r in rows[1:])]
+
+
 def test_fetch_log_survives_extractor_downtime(store: FileStore) -> None:
     ex = FakeExtractor(lambda item: ExtractFailure("extract_infra", infra=True, auth=True))
     result = run(store, [FakeFetcher("searxng", article)], ex)
