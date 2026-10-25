@@ -22,6 +22,7 @@ from stockmanager.domain.docs import ProposalDoc, Status
 from stockmanager.jobs.common import NY, TradingCalendar
 from stockmanager.scheduler.slots import latest_slot
 from stockmanager.scheduler.state import SchedulerState
+from stockmanager.triage.wakes import TriageWake
 
 DEFAULT_EXEC_DELAY_MINUTES = 5
 DEFAULT_LATE_THRESHOLD_MINUTES = 10
@@ -31,6 +32,9 @@ PRICE_CHECK_DELAY = timedelta(minutes=15)
 #: It is retried every tick until it succeeds, but only until this long after it first became due.
 DIGEST_DELAY = SETTLE
 DIGEST_RETRY_WINDOW = timedelta(hours=3)
+#: At most this many ``triage_escalation`` jobs per tick (v2 R7): each is a full off-cycle run, so a burst of wakes
+#: is drained across ticks rather than monopolising one.
+MAX_TRIAGE_JOBS_PER_TICK = 1
 
 
 @dataclass(frozen=True)
@@ -44,7 +48,11 @@ class ScheduleSlot:
 
 @dataclass(frozen=True)
 class DueJob:
-    """One derived job (AS §1.5). ``proposal_id`` is set for ``execution`` and ``reconfirm``."""
+    """One derived job (AS §1.5). ``proposal_id`` is set for ``execution`` and ``reconfirm``.
+
+    ``triage_escalation`` (v2 D1/R7) carries a ``ScheduleSlot`` whose ``cycle_id`` is the wake's ``triage-...`` id and
+    whose ``slot_time`` is the wake's ``due_at``. Its cycle id is not a date, so it never collides with the weekly slot.
+    """
 
     kind: str
     slot: ScheduleSlot | None
@@ -107,7 +115,26 @@ def list_due_jobs(
         jobs.append(DueJob("opening", None, None))
     if status == "LIVE" and calendar is not None:
         jobs.extend(_summary_jobs(now, cfg, scheduler_state, calendar))
+    if status == "LIVE":
+        jobs.extend(_triage_jobs(now, scheduler_state))  # after the weekly slot: an off-cycle wake never pre-empts it
     return jobs
+
+
+def _triage_wake_slot(wake: TriageWake) -> ScheduleSlot:
+    return ScheduleSlot(slot_time=wake.due_at, cycle_id=wake.cycle_id, late=False)
+
+
+def _triage_jobs(now: datetime, scheduler_state: SchedulerState) -> list[DueJob]:
+    """Due, not-yet-dispatched triage wakes, oldest first, capped at ``MAX_TRIAGE_JOBS_PER_TICK``.
+
+    A wake deferred through quiet hours has ``due_at`` at the morning delivery, so it is not due before then.
+    """
+    done = set(scheduler_state.triage_done)
+    due = sorted(
+        (w for w in scheduler_state.triage_wakes if w.cycle_id not in done and w.due_at <= now),
+        key=lambda w: (w.due_at, w.cycle_id),
+    )
+    return [DueJob("triage_escalation", _triage_wake_slot(w), None) for w in due[:MAX_TRIAGE_JOBS_PER_TICK]]
 
 
 def _summary_jobs(now: datetime, cfg: Config, scheduler_state: SchedulerState, calendar: TradingCalendar) -> list[DueJob]:
@@ -164,4 +191,11 @@ def list_all_jobs(
         jobs.append(DueJob("evaluation", _eval_slot(now, cfg, scheduler_state, late_threshold_minutes), None))
     if status == "APPROVED":
         jobs.append(DueJob("opening", None, None))
+    if status == "LIVE":
+        done = set(scheduler_state.triage_done)
+        jobs.extend(
+            DueJob("triage_escalation", _triage_wake_slot(w), None)
+            for w in scheduler_state.triage_wakes
+            if w.cycle_id not in done
+        )
     return jobs
