@@ -157,6 +157,18 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_audit(args: argparse.Namespace) -> int:
+    """``stockmanager audit``: the M5 guardrail report proving C1. Read-only; exit ``1`` if any violation is found."""
+    from stockmanager.reporting.guardrail import audit_workspace, render_report, report_json
+    from stockmanager.store import FileStore
+
+    if not args.workspace.exists():
+        raise WorkspaceMissing(f"workspace not found: {args.workspace}; run `stockmanager init` first")
+    report = audit_workspace(FileStore(args.workspace))
+    print(report_json(report).rstrip("\n") if args.json else render_report(report))
+    return 0 if report.passed else 1
+
+
 def cmd_close(args: argparse.Namespace) -> int:
     """``stockmanager close``: request (or ``--confirm``) the final close (AS §1.7, UX §8)."""
     ctx = create_app(args.workspace, args.config)
@@ -277,6 +289,11 @@ def build_parser() -> argparse.ArgumentParser:
         _add_workspace_arg(p)
         _add_config_arg(p)
         p.set_defaults(func=func)
+
+    p_audit = sub.add_parser("audit", help="guardrail audit: prove no fill traces to an LLM-executed action (M5, C1)")
+    _add_workspace_arg(p_audit)
+    p_audit.add_argument("--json", action="store_true", help="print the report as JSON")
+    p_audit.set_defaults(func=cmd_audit)
 
     p_close = sub.add_parser("close", help="request or confirm the final close")
     _add_workspace_arg(p_close)
