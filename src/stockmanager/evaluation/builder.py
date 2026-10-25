@@ -15,7 +15,7 @@ import logging
 import re
 import unicodedata
 from collections.abc import Collection
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Literal
@@ -59,6 +59,7 @@ class BuildResult:
 
     proposals: list[ProposalDoc]
     not_proposed: list[NotProposed]
+    proposal_ideas: dict[str, int] = field(default_factory=dict)  # proposal id -> priority of the idea it came from
 
 
 class _Drop(Exception):
@@ -190,7 +191,8 @@ class ProposalBuilder:
             accepted.append((idea, legs))
 
         proposals = self._assign(accepted, intent, cfg, created_at, existing_ids)
-        return BuildResult(proposals, not_proposed)
+        links = {p.proposal_id: idea.priority for p, (idea, _) in zip(proposals, accepted, strict=True)}
+        return BuildResult(proposals, not_proposed, links)
 
     # -- step 1 and 2 ----------------------------------------------------------------------------------------------
 

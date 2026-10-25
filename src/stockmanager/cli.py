@@ -114,6 +114,30 @@ def cmd_triage(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_explain(args: argparse.Namespace) -> int:
+    """``stockmanager explain <proposal_id>`` / ``--thesis <ticker>``: read-only explanation mode (v2 S1).
+
+    Assembled from stored records only, each claim cited; it executes nothing and calls no LLM. A refusal (unknown
+    proposal, not a holding, unresolvable citation) is an answer, so exit ``0``.
+    """
+    from stockmanager.assistant.explain import ExplainError, explain_proposal, explain_thesis, load_records, render
+
+    if (args.proposal_id is None) == (args.thesis is None):
+        print("❌ give a proposal id or --thesis <ticker>")
+        return 0
+    ctx = create_app(args.workspace, args.config)
+    records = load_records(ctx.store)
+    try:
+        answer = (
+            explain_thesis(args.thesis, records) if args.thesis is not None else explain_proposal(args.proposal_id, records)
+        )
+    except ExplainError as exc:
+        print(f"❌ {exc}")
+        return 0
+    print(render(answer))
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """``stockmanager doctor``: verify a cron entry or launchd agent is installed to fire ``tick`` (AS §10.1)."""
     from stockmanager.ops.doctor import run_doctor
@@ -290,6 +314,12 @@ def build_parser() -> argparse.ArgumentParser:
         _add_config_arg(p)
         p.set_defaults(func=func)
 
+    p_explain = sub.add_parser("explain", help="explain a proposal, or a held ticker's thesis, from stored records")
+    _add_workspace_arg(p_explain)
+    _add_config_arg(p_explain)
+    p_explain.add_argument("proposal_id", nargs="?", default=None)
+    p_explain.add_argument("--thesis", metavar="TICKER", default=None, help="explain the thesis on a held ticker")
+    p_explain.set_defaults(func=cmd_explain)
     p_audit = sub.add_parser("audit", help="guardrail audit: prove no fill traces to an LLM-executed action (M5, C1)")
     _add_workspace_arg(p_audit)
     p_audit.add_argument("--json", action="store_true", help="print the report as JSON")

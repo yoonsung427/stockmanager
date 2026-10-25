@@ -26,6 +26,7 @@ from stockmanager.domain.proposal_state import is_terminal
 from stockmanager.domain.sessions import last_completed_session
 from stockmanager.domain.timeutil import PT
 from stockmanager.evaluation.builder import ProposalBuilder
+from stockmanager.evaluation.eval_record import dump_evaluation, eval_file_name
 from stockmanager.evaluation.reasoner import Reasoner, ReasonerFailure
 from stockmanager.evaluation.reasoner_io import ReasonerInput, ReasonerOutput
 from stockmanager.news import NewsResult
@@ -200,6 +201,7 @@ class EvaluationEngine:
         news = self._news_runner(slot.cycle_id, snapshot)
         builder = ProposalBuilder(self._calendar, self._verifier)
         failure_reason = ""
+        reasoner_ran = False
         if news.news_status == "unavailable":
             # No evidence, no proposals (TS EDGE-09 / D14): the Reasoner is not asked, the report still goes out.
             intent = ReasonerOutput(summary="", hold_alternative="", holdings=[], ideas=[])
@@ -208,6 +210,7 @@ class EvaluationEngine:
             reasoner_input = self._build_input(slot.cycle_id, snapshot, valuation, news, cfg)
             try:
                 intent = self._reasoner.evaluate(reasoner_input)
+                reasoner_ran = True
             except ReasonerFailure as exc:
                 intent = ReasonerOutput(summary="", hold_alternative="", holdings=[], ideas=[])
                 failure_reason = exc.reason
@@ -252,10 +255,16 @@ class EvaluationEngine:
                         )
                 if staged:
                     txn.stage_proposals(staged)
+                eval_docs: dict[str, str] = {}
                 if outcome_scores:
-                    txn.stage_extras(
-                        eval_docs={SCORES_FILE: dump_scores([*load_scores(self._store.root), *outcome_scores])}
+                    eval_docs[SCORES_FILE] = dump_scores([*load_scores(self._store.root), *outcome_scores])
+                if reasoner_ran:  # the idea -> fact link is kept even when nothing was proposed (S1)
+                    sha = getattr(self._reasoner, "prompt_sha256", None)
+                    eval_docs[eval_file_name(slot.cycle_id)] = dump_evaluation(
+                        slot.cycle_id, cycle_date, intent, result.proposal_ideas, sha if isinstance(sha, str) else None
                     )
+                if eval_docs:
+                    txn.stage_extras(eval_docs=eval_docs)
 
                 # Phase D: report -- alerts are enqueued in the same commit (AS §1.2 step 8).
                 alerts: dict[str, str] = {}
