@@ -22,7 +22,7 @@ class Sender(NamedTuple):
     "now" read inside the handler (TS D11): using "now" would let a long queue delay change veto-window math.
     """
 
-    kind: Literal["discord", "cli"]
+    kind: Literal["discord", "cli", "assistant"]
     user_id: str | None
     message_id: str | None
     sent_at: datetime
@@ -35,11 +35,23 @@ class AuthorizationResult(NamedTuple):
     reason: str | None = None
 
 
+def actor(sender: Sender) -> str:
+    """The audit actor recorded in hash chains: ``cli``, ``discord:<uid>`` or ``assistant:<uid>`` (v2 D2).
+
+    An assistant-confirmed action must never chain as ``discord:<owner>``, so the kind is part of the actor.
+    """
+    if sender.kind == "cli":
+        return "cli"
+    return f"{sender.kind}:{sender.user_id}"
+
+
 def authorize(sender: Sender, command: ParsedCommand, cfg: Config) -> AuthorizationResult:
     """Check authorization for ``command`` from ``sender`` (AS §11.3). Called for every command, ``STATUS`` included.
 
     CLI is always trusted (TS CMD-X01). Discord requires an exact string match of ``sender.user_id`` against
-    ``cfg.discord.allowed_user_ids``; an empty allow-list disables Discord control entirely (TS CMD-X03).
+    ``cfg.discord.allowed_user_ids``; an empty allow-list disables Discord control entirely (TS CMD-X03). An
+    ``assistant`` sender (v2 D2) is not trusted like the CLI: it passes the same allow-list check as data, with
+    ``user_id`` the allow-listed user it acts for. The extra confirm-token rule is the handler's (``confirm.py``).
     """
     if sender.kind == "cli":
         return AuthorizationResult(True)

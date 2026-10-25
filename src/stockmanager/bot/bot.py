@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections import defaultdict, deque
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,6 +19,7 @@ import discord
 
 from stockmanager.commands import CommandContext, Sender, run_command
 from stockmanager.commands.handlers import UNRECOGNIZED
+from stockmanager.commands.ratelimit import RATE_LIMITED
 from stockmanager.notify import enqueue, rejected_control_message
 from stockmanager.notify.components import click_command, parse_custom_id
 from stockmanager.notify.deliver import Channel, deliver_pending
@@ -28,8 +28,6 @@ from stockmanager.store.lock import Clock, now_pt
 
 log = logging.getLogger(__name__)
 
-RATE_LIMIT_WINDOW = timedelta(minutes=1)
-RATE_LIMIT_MAX = 10
 REJECTED_ALERT_WINDOW = timedelta(minutes=10)
 OUTBOX_INTERVAL_S = 5.0
 HEARTBEAT_INTERVAL_S = 30.0
@@ -68,7 +66,6 @@ class PortfolioBot(discord.Client):
         self._channels = list(channels)
         self._clock = clock
         self._stock_query = stock_query
-        self._recent_commands: dict[str, deque[datetime]] = defaultdict(deque)
         self._last_rejected_alert: dict[str, datetime] = {}
         self._outbox_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
@@ -93,18 +90,6 @@ class PortfolioBot(discord.Client):
         cursor = self._read_cursor()
         cursor[channel_key] = message_id
         fsutil.atomic_write_text(self._cursor_path, json.dumps(cursor, indent=2) + "\n")
-
-    # -- rate limiting -------------------------------------------------------------------------------------------
-
-    def _is_rate_limited(self, key: str, now: datetime) -> bool:
-        """≤ ``RATE_LIMIT_MAX`` commands per ``RATE_LIMIT_WINDOW`` per sender (AS §9.1)."""
-        window = self._recent_commands[key]
-        while window and now - window[0] > RATE_LIMIT_WINDOW:
-            window.popleft()
-        if len(window) >= RATE_LIMIT_MAX:
-            return True
-        window.append(now)
-        return False
 
     def _should_alert_rejection(self, key: str, now: datetime) -> bool:
         """``rejected_control_message`` alerts are limited to one per sender per 10 min (⚑AD11)."""
@@ -136,10 +121,10 @@ class PortfolioBot(discord.Client):
         sender = Sender("discord", str(message.author.id), str(message.id), message.created_at)
         key = str(message.author.id)
         now = self._clock()
-        if self._is_rate_limited(key, now):
-            await self._reply(message, "❌ Rate limited: too many commands, try again in a minute.")
-            return
         reply = await asyncio.to_thread(run_command, message.content, sender, self._ctx)
+        if reply == RATE_LIMITED:  # the handler layer owns the budget (v2 D2); the bot only relays the refusal
+            await self._reply(message, reply)
+            return
         answered = False
         if reply == UNRECOGNIZED and self._stock_query is not None:
             # "what's going on with MSFT?": not a command, so try it as a stock query. It does the work (an LLM
