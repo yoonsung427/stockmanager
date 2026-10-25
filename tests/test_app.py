@@ -176,7 +176,10 @@ def test_create_app_wires_discord_channel_when_token_and_channel_present(tmp_pat
     (ws / "config.yaml").write_text("discord:\n  channel_id: '123456'\n", encoding="utf-8")
     monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
     ctx = create_app(ws, clock=fixed_clock)
-    assert len(ctx.notify_channels) == 1
+    # With the fallback, the same token also wires HermesMainchatChannel (R9).
+    assert len(ctx.notify_channels) == 2
+    assert ctx.notify_channels[0].name == "discord"
+    assert ctx.notify_channels[1].name == "mainchat"
 
 
 def test_create_app_calendar_is_holiday_aware(tmp_path: Path) -> None:
