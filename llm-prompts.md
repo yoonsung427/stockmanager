@@ -401,6 +401,9 @@ Built by the engine in phase B from already-validated, already-persisted data (`
 | `sector_etfs` | `[{etf, sector, return_1w_pct, return_2w_pct}]` | sector rotation (SS §8.1) |
 | `facts` | `[{fact_id, ticker, event, date, description, source_domain}]`, newest first, already capped (AS §7.6) | `Fact.for_reasoner()` projection — **excludes `display_title` and `source_url`** (AS §7.3). Includes upcoming-earnings facts. |
 | `veto_history` | `[{proposal_id_redacted, vetoed_on, legs[{action, ticker}], reason}]`, last 10 | `reason` is the sanitised ≤ 500-char user text or `null`. Proposal IDs are replaced by an ordinal so the model has no ID strings to echo. |
+| `outcomes` | `{provisional, min_scored, scored_90d, records[], stats}`; each record `{proposal_id_redacted, ticker, action, horizon_days, pnl_pct, is_win}` | O3. System-computed from fills and prices; carries no free text. `stats` only at/above `min_scored` scored 90-day trades; `provisional` flips automatically, no human gate (R12). |
+| `constraints` | `{stored, records[{kind, ticker, scope, severity, set_on}]}`, newest first, capped | S4 durable owner constraints from `workspace/preferences.json`; enumerated schema only, no free text. `stored > len(records)` signals truncation. |
+| `veto_patterns` | `{provisional, min_sample, decided, vetoed, rows[{dimension, value, vetoed, total, veto_rate_pct}]}`, capped 10 per dimension | S4. Stats over the FULL stored veto history, not just `veto_history`; `veto_rate_pct` is `null` while provisional. Grouped by scope/ticker — stored proposals carry no event-kind link, so none is invented. |
 
 ### 4.5 Output schema — `reasoner/v1/output_schema.json`
 
