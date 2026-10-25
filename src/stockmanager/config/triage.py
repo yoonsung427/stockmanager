@@ -1,4 +1,17 @@
-"""The ``triage.*`` settings (v2 design D1): the news triage tier. File-edit only, never reachable via ``SET`` (R1)."""
+"""The ``triage.*`` settings (v2 design D1): the news triage tier.
+
+SET policy (owner decision 2026-10-24, superseding R1's "SET reachability retracted"):
+
+* SET-reachable, as dotted keys in ``SETTABLE_KEYS``: ``triage.confidence_threshold``, ``triage.quiet_hours``,
+  ``triage.max_escalations_per_day``, ``triage.dedupe_window_hours``. These are materiality gates: they tune how much
+  triage escalates, and the field validation below (range / pattern) still applies to every ``SET`` value.
+* File-edit only: ``enabled``, ``shadow_mode``, ``benchmark_passed`` and every ``benchmark_*`` key. Production enable
+  is gated by the shadow window and the Q1 benchmark (test plan §4); a chat command, least of all a confirmed
+  assistant proposal, must not be able to flip it. ``max_items_per_run`` is also file-edit only (an operational limit).
+
+R1's safety rationale still holds for what the decision does not cover: production-enable flags stay file-edit only,
+constraints use an enumerated schema (``workspace/prefs.py``, never free text), and secrets stay file/env only.
+"""
 
 from __future__ import annotations
 

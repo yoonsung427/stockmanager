@@ -23,9 +23,12 @@ from stockmanager.store.lock import Clock, LockMeta, PidChecker, PortfolioLock, 
 if TYPE_CHECKING:
     from stockmanager.store.transaction import Transaction
 
-__all__ = ["SUPPORTED_SCHEMA_VERSION", "FileStore", "LockMeta", "LockNotHeld", "SchemaTooNew", "canonical_json"]
+__all__ = ["SUPPORTED_SCHEMA_VERSION", "WORKSPACE_FILES", "FileStore", "LockMeta", "LockNotHeld", "SchemaTooNew", "canonical_json"]
 
 SUPPORTED_SCHEMA_VERSION = 1
+#: The root-level files besides the books that stockmanager owns and rewrites atomically inside a transaction:
+#: ``config.yaml`` (``SET`` persists to it) and ``preferences.json`` (durable constraints, ``workspace.prefs``).
+WORKSPACE_FILES: frozenset[str] = frozenset({"config.yaml", "preferences.json"})
 
 
 class SchemaTooNew(Exception):
@@ -66,6 +69,11 @@ class FileStore:
     def portfolio_path(self) -> Path:
         """``portfolio.json``."""
         return self.root / "portfolio.json"
+
+    @property
+    def preferences_path(self) -> Path:
+        """``preferences.json``: the durable preference constraints (``workspace.prefs``)."""
+        return self.root / "preferences.json"
 
     @property
     def trades_log_path(self) -> Path:
@@ -237,8 +245,12 @@ class FileStore:
         dashboard: Mapping[str, str] | None = None,
         alerts: Mapping[str, str] | None = None,
         state: Mapping[str, str] | None = None,
+        workspace: Mapping[str, str] | None = None,
     ) -> None:
         """Write the secondary files; each mapping is relative file name -> text, replaced tmp -> rename.
+
+        ``workspace`` holds the stockmanager-owned files at the workspace root (``WORKSPACE_FILES``); any other name
+        is refused, so a caller cannot use it to overwrite ``portfolio.json`` or ``trades.log``.
 
         ``acks`` are appended to the append-only ``acks.jsonl`` instead (AS §3.11). Names may contain a
         sub-directory (``evaluations/eval-2026-10-24.json``) but may not escape their directory.
@@ -249,7 +261,10 @@ class FileStore:
             ("dashboard", dashboard),
             ("alerts/pending", alerts),
             ("state", state),
+            ("", workspace),
         ):
+            if directory == "" and any(name not in WORKSPACE_FILES for name in files or {}):
+                raise ValueError(f"not a workspace file: {sorted(set(files or {}) - WORKSPACE_FILES)}")
             for name, text in (files or {}).items():
                 fsutil.atomic_write_text(self._child(directory, name), text)
         if acks:

@@ -179,6 +179,8 @@ def reasoner_input() -> ReasonerInput:
                 }
             ],
             "outcomes": {},
+            "constraints": {},
+            "veto_patterns": {},
         }
     )
 

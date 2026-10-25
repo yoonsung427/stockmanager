@@ -15,6 +15,12 @@ Weekly-digest metrics (v2 M3, M4), also pure over injected records:
   cycle, so "per cycle" cannot be derived. Vetoes are grouped by the proposal's own ``created_at`` date, the only
   stored grouping; hit-rate is grouped by the scored trade's ``fill_date``. A trend needs two periods; with fewer
   the line says so and gives no direction.
+
+Veto pattern stats (v2 S4) are the same kind of pure derivation, over the FULL stored veto history rather than the
+last-N window the reasoner also sees. LIMITATION: a proposal stores no event kind (no stored record links it to the
+facts that prompted it), so the stats group by what is stored, the trade action (``scope``: buy/sell) and the ticker,
+not by event kind. Like the outcomes hit-rate, a group below ``MIN_VETO_SAMPLE`` decided proposals is provisional: its
+counts are reported and its rate is ``None``.
 """
 
 from __future__ import annotations
@@ -27,13 +33,18 @@ from typing import Literal
 
 from stockmanager.domain.docs import ProposalDoc
 from stockmanager.domain.money import q4
+from stockmanager.domain.proposal_state import is_terminal
 from stockmanager.notify.outbox import Severity
 from stockmanager.outcomes.models import GATE_HORIZON, OutcomeScore
 
 #: M3 goal (not a gate): action-required alerts should stay under this share of all alerts.
 NOISE_TARGET_PCT = 20
 
+#: Like ``outcomes.models.MIN_SCORED``: below this many decided proposals a veto rate is provisional, not an inference.
+MIN_VETO_SAMPLE = 10
+
 Direction = Literal["up", "down", "flat"]
+Dimension = Literal["scope", "ticker"]
 
 
 @dataclass(frozen=True)
@@ -171,3 +182,64 @@ def describe_trend(label: str, unit: str, trend: Trend) -> str:
         return f"{label} trend: no direction yet, only one period so far ({now})."
     prev = trend.series[-2]
     return f"{label} trend: {trend.direction}, {now} vs {prev.rate * 100}% on {prev.period}."
+
+
+@dataclass(frozen=True)
+class VetoPatternRow:
+    """Veto count for one ``scope`` (``buy``/``sell``) or ticker. ``rate_pct`` (4 dp) is ``None`` while ``provisional``."""
+
+    dimension: Dimension
+    value: str
+    vetoed: int
+    total: int
+    provisional: bool
+    rate_pct: Decimal | None
+
+
+@dataclass(frozen=True)
+class VetoPatterns:
+    """Veto stats over every decided proposal. ``rows`` run scope first, then tickers, by sample size descending."""
+
+    total: int
+    vetoed: int
+    min_sample: int
+    provisional: bool
+    rate_pct: Decimal | None
+    rows: tuple[VetoPatternRow, ...]
+
+
+def _decided(doc: ProposalDoc) -> bool:
+    """An owner-facing outcome: terminal, not a pause cancellation, not a re-run supersede (v2 design §4)."""
+    if not is_terminal(doc.state) or doc.state == "CANCELLED_PAUSED":
+        return False
+    return not (doc.state == "VETOED" and doc.transitions[-1].actor == "system:evaluation")
+
+
+def _rate(vetoed: int, total: int, min_sample: int) -> Decimal | None:
+    return q4(Decimal(vetoed) * 100 / Decimal(total)) if total >= min_sample else None
+
+
+def veto_pattern_stats(proposals: Iterable[ProposalDoc], *, min_sample: int = MIN_VETO_SAMPLE) -> VetoPatterns:
+    """Veto rate overall and by action and ticker, over all of ``proposals`` (not a recent window).
+
+    A proposal counts once in each group its legs touch. Undecided, pause-cancelled and system-superseded proposals
+    are left out of every denominator. Every group applies the ``min_sample`` gate on its own.
+    """
+    groups: dict[tuple[Dimension, str], tuple[int, int]] = {}
+    total = vetoed = 0
+    for doc in proposals:
+        if not _decided(doc):
+            continue
+        hit = doc.state == "VETOED"
+        total += 1
+        vetoed += hit
+        keys: set[tuple[Dimension, str]] = {("scope", leg.action.lower()) for leg in doc.legs}
+        keys |= {("ticker", leg.ticker) for leg in doc.legs}
+        for key in keys:
+            v, t = groups.get(key, (0, 0))
+            groups[key] = (v + hit, t + 1)
+    rows = tuple(
+        VetoPatternRow(dim, value, v, t, t < min_sample, _rate(v, t, min_sample))
+        for (dim, value), (v, t) in sorted(groups.items(), key=lambda kv: (kv[0][0] != "scope", -kv[1][1], kv[0][1]))
+    )
+    return VetoPatterns(total, vetoed, min_sample, total < min_sample, _rate(vetoed, total, min_sample), rows)

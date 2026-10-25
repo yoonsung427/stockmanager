@@ -377,10 +377,20 @@ def test_triage_job_is_a_no_op_when_disabled(store: FileStore) -> None:
     assert not eventsdb.db_path(store.root).exists()  # disabled means untouched, not just silent
 
 
+SET_REACHABLE_TRIAGE = {
+    "triage.confidence_threshold",
+    "triage.quiet_hours",
+    "triage.max_escalations_per_day",
+    "triage.dedupe_window_hours",
+}
+
+
 def test_strict_defaults_and_file_edit_only() -> None:  # A3, R1
     cfg = Config().triage
     assert (cfg.enabled, cfg.shadow_mode, cfg.benchmark_passed, cfg.escalation_live) == (False, True, False, False)
-    assert "triage." in BLOCKED_SET_PREFIXES and not any(k.startswith("triage") for k in SETTABLE_KEYS)
+    # Owner decision 2026-10-24: the four materiality gates are SET-reachable; the enable flags never are.
+    assert {k for k in SETTABLE_KEYS if k.startswith("triage")} == SET_REACHABLE_TRIAGE
+    assert "triage." not in BLOCKED_SET_PREFIXES and "ops." in BLOCKED_SET_PREFIXES
     with pytest.raises(ValidationError):
         Config.model_validate({"triage": {"auto_escalate": True}})
     with pytest.raises(ValidationError):

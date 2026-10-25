@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from stockmanager.domain.docs import ProposalDoc
 from stockmanager.outcomes.models import OutcomeScore
 from stockmanager.reporting import (
     AlertRecord,
@@ -14,9 +15,11 @@ from stockmanager.reporting import (
     hit_rate_trend,
     noise_ratio,
     response_report,
+    veto_pattern_stats,
     veto_rate_trend,
 )
-from tests.support.proposals import make_proposal
+from stockmanager.reporting.reporting import MIN_VETO_SAMPLE
+from tests.support.proposals import advance, make_leg, make_proposal
 
 PT = ZoneInfo("America/Los_Angeles")
 T0 = datetime(2026, 10, 26, 7, 0, tzinfo=PT)
@@ -164,3 +167,59 @@ def test_single_period_gives_no_trend_direction() -> None:
 def test_no_data_says_so() -> None:
     assert describe_trend("Hit-rate", "scored trades", hit_rate_trend([])) == "Hit-rate trend: no scored trades yet."
     assert veto_rate_trend([]).direction is None
+
+
+# -- S4: veto pattern stats over the full stored history ---------------------------------------------------------------
+
+
+def _pdoc(n: int, state: str, *, action: str = "BUY", ticker: str = "AAPL", actor: str = "discord:1") -> ProposalDoc:
+    """Proposal ``n`` whose single leg is ``action`` ``ticker``; non-initial states are reached by one transition."""
+    pid = f"P-2026-10-{n // 100 + 1:02d}-{n % 100:02d}"
+    doc = make_proposal(pid, "VETO_WINDOW")
+    doc = doc.model_copy(update={"legs": [make_leg(pid=pid).model_copy(update={"action": action, "ticker": ticker})]})
+    return advance(doc, state, T0, actor=actor) if state != "VETO_WINDOW" else doc  # type: ignore[arg-type]
+
+
+def test_veto_patterns_are_provisional_below_the_minimum_sample() -> None:
+    docs = [_pdoc(i, "VETOED") for i in range(MIN_VETO_SAMPLE - 1)]
+    stats = veto_pattern_stats(docs)
+    assert (stats.total, stats.vetoed, stats.provisional, stats.rate_pct) == (MIN_VETO_SAMPLE - 1, MIN_VETO_SAMPLE - 1, True, None)
+    assert all(r.provisional and r.rate_pct is None for r in stats.rows)  # counts only, no inference
+
+
+def test_veto_patterns_flip_to_rates_at_the_minimum_sample_per_group() -> None:
+    docs = [_pdoc(i, "VETOED" if i < 4 else "EXECUTED") for i in range(MIN_VETO_SAMPLE)]  # 4 of 10 BUY AAPL
+    docs += [_pdoc(50 + i, "VETOED", action="SELL", ticker="MSFT") for i in range(2)]  # small SELL/MSFT sample
+    stats = veto_pattern_stats(docs)
+    assert (stats.total, stats.vetoed, stats.provisional) == (MIN_VETO_SAMPLE + 2, 6, False)
+    assert stats.rate_pct == Decimal("50.0000")
+    rows = {(r.dimension, r.value): r for r in stats.rows}
+    assert rows[("scope", "buy")].rate_pct == Decimal("40.0000") and not rows[("scope", "buy")].provisional
+    assert rows[("ticker", "AAPL")].rate_pct == Decimal("40.0000")
+    sell = rows[("scope", "sell")]  # each group is gated on its own sample
+    assert (sell.vetoed, sell.total, sell.provisional, sell.rate_pct) == (2, 2, True, None)
+    assert rows[("ticker", "MSFT")].provisional
+    assert [(r.dimension, r.value) for r in stats.rows][:2] == [("scope", "buy"), ("scope", "sell")]  # scope first, by size
+
+
+def test_veto_patterns_cover_the_full_history_not_a_recent_window() -> None:
+    docs = [_pdoc(i, "VETOED") for i in range(25)] + [_pdoc(40 + i, "EXECUTED") for i in range(25)]
+    stats = veto_pattern_stats(docs)
+    assert (stats.total, stats.vetoed, stats.rate_pct) == (50, 25, Decimal("50.0000"))  # 25 > the last-10 window
+
+
+def test_veto_patterns_leave_out_undecided_paused_and_superseded() -> None:
+    docs = [
+        _pdoc(1, "VETOED"),
+        _pdoc(2, "EXECUTED"),
+        _pdoc(3, "VETO_WINDOW"),  # still open: no decision yet
+        _pdoc(4, "CANCELLED_PAUSED", actor="discord:1"),  # a pause is not an owner decision on the idea
+        _pdoc(5, "VETOED", actor="system:evaluation"),  # re-run bookkeeping (design §4)
+    ]
+    stats = veto_pattern_stats(docs, min_sample=2)
+    assert (stats.total, stats.vetoed, stats.rate_pct) == (2, 1, Decimal("50.0000"))
+
+
+def test_veto_patterns_with_no_proposals_say_so() -> None:
+    stats = veto_pattern_stats([])
+    assert (stats.total, stats.provisional, stats.rate_pct, stats.rows) == (0, True, None, ())

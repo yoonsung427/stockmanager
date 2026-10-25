@@ -26,6 +26,7 @@ from stockmanager.domain.docs import ProposalDoc
 from stockmanager.domain.proposal_state import chain_hash
 from stockmanager.notify import Alert, ChannelState, Receipt, Rendered, Transient, deliver_pending, enqueue
 from stockmanager.notify.templates import veto_window_open
+from stockmanager.prefs.prefs import load_prefs
 from tests.support.world import PAIR_ID, World, pr_pair
 
 OWNER = "1"
@@ -113,6 +114,8 @@ IRREVERSIBLE = [
     f"RECONFIRM {PAIR_ID}",
     "RECONCILE rebuild",
     "SET max_position_pct 25",
+    "SET triage.quiet_hours 23:00-06:00",
+    "SET prefs earnings AAPL buy alert",
 ]
 
 
@@ -298,6 +301,52 @@ def test_assistant_actor_distinct_in_audit(world: World, ctx: CommandContext) ->
     assert record["actor"] == f"assistant:{OWNER}" and record["confirmed_by"] == f"discord:{OWNER}"
     assert record["command"] == record["final_command"] == f"VETO {PAIR_ID} no"
     assert not (world.store.root / "state" / "events.sqlite").exists()
+
+
+# -- S4: confirm-gated constraint writes vs direct SET ------------------------------------------------------------------
+
+
+def _confirmed_dispatch(world: World, ctx: CommandContext, command: str) -> str:
+    bridge = Bridge(ctx, KEY)
+    ref = bridge.propose(command, OWNER).ref
+    assert ref is not None
+    deliver_pending(world.store, [RecordingChannel("discord")], world.clock)
+    return bridge.dispatch(ref, bridge.confirm(ref, sender(world, "discord")))
+
+
+def test_assistant_constraint_is_only_a_proposal_until_the_owner_confirms(world: World, ctx: CommandContext) -> None:
+    command = "SET prefs earnings AAPL buy alert"
+    result = Bridge(ctx, KEY).propose(command, OWNER)
+    assert result.status == "proposed" and not (world.store.root / "preferences.json").exists()
+    assert run_command(command, sender(world, "assistant"), ctx).startswith("❌")  # no token, no write
+    assert load_prefs(world.store.root) == []
+
+    world.clock.advance(minutes=2)
+    assert _confirmed_dispatch(world, ctx, command).startswith("✅")
+    (pref,) = load_prefs(world.store.root)
+    assert (pref.ticker, pref.source) == ("AAPL", "bridge")  # provenance: confirmed assistant proposal
+
+
+def test_direct_owner_set_records_owner_source_not_bridge(world: World, ctx: CommandContext) -> None:
+    assert run_command("SET prefs legal TSLA any info", sender(world, "discord"), ctx).startswith("✅")
+    (pref,) = load_prefs(world.store.root)
+    assert pref.source == "owner"
+
+
+def test_confirmed_assistant_proposal_cannot_flip_triage_enable_or_write_free_text(
+    world: World, ctx: CommandContext
+) -> None:
+    for command in ("SET triage.enabled true", "SET triage.shadow_mode false", "SET prefs buy everything now please"):
+        world.clock.advance(minutes=2)
+        assert _confirmed_dispatch(world, ctx, command).startswith("❌"), command
+    assert not ctx.cfg.triage.enabled and ctx.cfg.triage.shadow_mode
+    assert load_prefs(world.store.root) == [] and not (world.store.root / "config.yaml").exists()
+
+
+def test_confirmed_assistant_may_set_a_triage_gate_and_it_persists(world: World, ctx: CommandContext) -> None:
+    assert _confirmed_dispatch(world, ctx, "SET triage.confidence_threshold 0.9").startswith("✅")
+    assert ctx.cfg.triage.confidence_threshold == 0.9
+    assert "confidence_threshold: 0.9" in (world.store.root / "config.yaml").read_text(encoding="utf-8")
 
 
 # -- rate limit -----------------------------------------------------------------------------------------------------

@@ -8,11 +8,14 @@ from stockmanager.reporting.reporting import (
     PeriodRate,
     ResponseReport,
     Trend,
+    VetoPatternRow,
+    VetoPatterns,
     describe_noise,
     describe_trend,
     hit_rate_trend,
     noise_ratio,
     response_report,
+    veto_pattern_stats,
     veto_rate_trend,
 )
 
@@ -22,10 +25,13 @@ __all__ = [
     "PeriodRate",
     "ResponseReport",
     "Trend",
+    "VetoPatternRow",
+    "VetoPatterns",
     "describe_noise",
     "describe_trend",
     "hit_rate_trend",
     "noise_ratio",
     "response_report",
+    "veto_pattern_stats",
     "veto_rate_trend",
 ]
