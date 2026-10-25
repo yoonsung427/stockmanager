@@ -89,6 +89,7 @@ def cmd_tick(args: argparse.Namespace) -> int:
             reconfirm=ctx.reconfirm,
             channels=ctx.notify_channels,
             summary=ctx.summary_jobs,
+            triage_escalation=ctx.triage_escalation,
         )
     print(f"tick: {'ok' if result == 0 else 'error'}")
     return result

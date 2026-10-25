@@ -45,6 +45,7 @@ from stockmanager.triage.quiet import QuietHours
 from stockmanager.triage.runner import TRIAGE_LOCK_NAME, load_done, read_fetch_log, run_triage, triage_lock
 from stockmanager.triage.wakes import CYCLE_PREFIX
 from tests.sim.triage_model import FixedTriageModel
+from tests.support.world import World
 from tests.unit.test_import_rules import PKG, SRC, _imports, _modules, _under
 
 NOON = datetime(2026, 10, 14, 12, 0, tzinfo=PT)  # a Wednesday, outside quiet hours
@@ -674,3 +675,130 @@ def test_escalation_goes_only_through_the_due_job_kind(store: FileStore) -> None
     kinds = {j.kind for j in list_due_jobs(NOON, Config(), "LIVE", [], _with_wakes(*wakes))}
     assert kinds == {"triage_escalation"} and not {"execution", "opening", "reconfirm"} & kinds
     assert not (store.root / "proposals").exists() and not store.portfolio_exists()  # triage proposes and fills nothing
+
+
+# -- off-cycle evaluation wake: engine accepts a triage cycle id, composition binds the handler (R7/D1) --------------
+
+
+def _triage_slot(wake: TriageWake) -> ScheduleSlot:
+    return ScheduleSlot(slot_time=wake.due_at, cycle_id=wake.cycle_id, late=False)
+
+
+def test_engine_runs_a_triage_cycle_without_date_parsing(world: World) -> None:  # R7/D1
+    from stockmanager.sim.reasoner import StubReasoner
+    from tests.support.reasoner_output import pair_output
+
+    world.seed()
+    wake = _wake(datetime(2026, 10, 22, 9, 0, tzinfo=PT))  # a Thursday: not the weekly slot's date
+    slot = _triage_slot(wake)
+    with pytest.raises(ValueError):
+        date.fromisoformat(slot.cycle_id)  # the old parse would have raised here
+    reasoner = StubReasoner(pair_output())
+    result = world.evaluation(reasoner).run(slot, Config())
+    assert result.outcome == "completed"
+    assert reasoner.inputs and reasoner.inputs[0].cycle_id == wake.cycle_id
+    assert list((world.store.root / "alerts" / "pending").glob("*.json"))  # the cycle's report was queued
+
+
+def test_engine_still_dates_a_normal_cycle_by_its_slot(world: World) -> None:  # R7/D1: no behaviour change
+    from stockmanager.sim.reasoner import StubReasoner
+    from tests.support.reasoner_output import pair_output
+    from tests.support.world import EVAL_SLOT
+
+    world.seed()
+    assert EVAL_SLOT.cycle_id == EVAL_SLOT.slot_time.date().isoformat()
+    assert world.evaluation(StubReasoner(pair_output())).run(EVAL_SLOT, Config()).outcome == "completed"
+
+
+class _CountingEvaluation:
+    """Stands in for ``EvaluationEngine``: records the slots it was asked to run."""
+
+    def __init__(self, outcome: str = "completed") -> None:
+        self.outcome = outcome
+        self.slots: list[ScheduleSlot] = []
+
+    def run(self, slot: ScheduleSlot, _cfg: Config) -> Any:
+        from stockmanager.evaluation.engine import RunResult
+
+        self.slots.append(slot)
+        return RunResult(self.outcome)  # type: ignore[arg-type]
+
+
+def _cfg_with(triage: TriageConfig) -> Config:
+    return Config(triage=triage)
+
+
+def test_composition_binds_the_handler_and_the_wake_dispatches_to_it(store: FileStore, clock: FakeClock) -> None:  # R7
+    from stockmanager.app import make_triage_escalation
+
+    _seed_live(store)
+    wake = _wake(clock.now - timedelta(minutes=1))
+    WakeQueue(store.root).enqueue(wake)
+    evaluation = _CountingEvaluation()
+    handler = make_triage_escalation(evaluation, lambda: _cfg_with(LIVE))  # type: ignore[arg-type]
+    assert tick(clock, store, Config(), triage_escalation=handler) == 0
+    assert [s.cycle_id for s in evaluation.slots] == [wake.cycle_id]
+    assert scheduler_state_mod.load(store.root).triage_done == (wake.cycle_id,)
+
+
+def test_create_app_wires_the_handler(tmp_path: Path) -> None:  # R7
+    from stockmanager.app import create_app
+
+    (tmp_path / "ws").mkdir()
+    assert create_app(tmp_path / "ws").triage_escalation is not None
+
+
+@pytest.mark.parametrize("cfg", [TriageConfig(), SHADOW, TriageConfig(enabled=True, shadow_mode=False)])
+def test_handler_refuses_unless_escalation_is_live(store: FileStore, clock: FakeClock, cfg: TriageConfig) -> None:  # R1
+    from stockmanager.app import make_triage_escalation
+
+    _seed_live(store)
+    wake = _wake(clock.now)
+    WakeQueue(store.root).enqueue(wake)
+    evaluation = _CountingEvaluation()
+    handler = make_triage_escalation(evaluation, lambda: _cfg_with(cfg))  # type: ignore[arg-type]
+    assert handler(_triage_slot(wake)) is False
+    tick(clock, store, Config(), triage_escalation=handler)
+    assert evaluation.slots == []  # disabled / shadow: the evaluation never ran, so no proposal and no fill
+    assert scheduler_state_mod.load(store.root).triage_done == ()
+    assert not (store.root / "proposals").exists() and not (store.root / "trades.log").exists()
+
+
+def test_handler_leaves_the_wake_due_when_the_run_is_not_completed(store: FileStore, clock: FakeClock) -> None:  # R7
+    from stockmanager.app import make_triage_escalation
+
+    wake = _wake(clock.now)
+    handler = make_triage_escalation(_CountingEvaluation("lock_busy"), lambda: _cfg_with(LIVE))  # type: ignore[arg-type]
+    assert handler(_triage_slot(wake)) is False
+
+
+def test_shadow_run_after_wake_path_emits_no_proposal_and_no_fill(store: FileStore, clock: FakeClock) -> None:  # R1
+    from stockmanager.app import make_triage_escalation
+
+    _seed_live(store)
+    _write_fetch_log(store, [item()])
+    assert run_triage(store, SHADOW, FixedTriageModel(HIGH), {"AAPL"}) == {"shadow_escalate": 1}
+    evaluation = _CountingEvaluation()
+    handler = make_triage_escalation(evaluation, lambda: _cfg_with(SHADOW))  # type: ignore[arg-type]
+    assert tick(clock, store, Config(), triage_escalation=handler) == 0
+    assert evaluation.slots == [] and WakeQueue(store.root).all() == []
+    assert not (store.root / "proposals").exists() and not (store.root / "trades.log").exists()
+    assert store.load_portfolio().cash == Decimal(10000)
+
+
+def test_dedupe_is_checked_before_dispatch_on_backlog_rerun(store: FileStore, clock: FakeClock) -> None:  # R4
+    from stockmanager.app import make_triage_escalation
+
+    _seed_live(store)
+    _write_fetch_log(store, [item(1)])
+    held = {"AAPL"}
+    model = FixedTriageModel(HIGH)
+    evaluation = _CountingEvaluation()
+    handler = make_triage_escalation(evaluation, lambda: _cfg_with(LIVE))  # type: ignore[arg-type]
+    assert run_triage(store, LIVE, model, held) == {"escalate": 1}
+    tick(clock, store, Config(), triage_escalation=handler)
+    (store.root / "state" / "triage_done.json").unlink()  # lose the backlog cursor: the item is judged again
+    assert run_triage(store, LIVE, model, held) == {"suppressed_duplicate": 1}  # dedupe stops it before any wake
+    assert len(WakeQueue(store.root).all()) == 1
+    tick(clock, store, Config(), triage_escalation=handler)
+    assert len(evaluation.slots) == 1  # one wake, dispatched once

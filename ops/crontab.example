@@ -15,3 +15,8 @@
 # Use absolute paths: cron starts with an empty environment. Create the log directory first.
 # Replace /path/to/workspace with your workspace directory (the one holding portfolio.json).
 */5 * * * * /Users/yoonsung/stockmanager/.venv/bin/python -m stockmanager tick --workspace /path/to/workspace >> /path/to/workspace/logs/tick.log 2>&1
+
+# Triage (v2 D1, R7): its own cron job, NOT part of the tick. It takes state/triage.lock, never tick.lock, so a slow
+# classifier cannot starve the outbox drain or execution. A no-op until triage.enabled is set in config.yaml, and
+# log-only (shadow mode) until triage.shadow_mode is false AND triage.benchmark_passed is true.
+*/5 * * * * /Users/yoonsung/stockmanager/.venv/bin/python -m stockmanager triage --workspace /path/to/workspace >> /path/to/workspace/logs/triage.log 2>&1

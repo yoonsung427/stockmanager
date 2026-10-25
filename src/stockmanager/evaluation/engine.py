@@ -162,7 +162,9 @@ class EvaluationEngine:
         rev_before = snapshot.rev
 
         # Phase B: gather and think, no lock.
-        cycle_date = date.fromisoformat(slot.cycle_id)
+        # The slot's own PT date, not its cycle id: an off-cycle triage wake's id (``triage-...``) is not a date. For a
+        # weekly slot the two are identical (``cycle_id == slot_time.date().isoformat()``).
+        cycle_date = slot.slot_time.astimezone(PT).date()
         # Prices are the last completed session's close: a Saturday cycle has no bar of its own (TS EDGE-01/EDGE-14).
         valuation_date = last_completed_session(self._calendar, slot.slot_time)
         tickers = sorted({p.ticker for p in snapshot.positions} | {cfg.benchmark})
