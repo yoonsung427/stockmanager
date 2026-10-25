@@ -135,12 +135,14 @@ def _build_price_provider(name: str, clock: Clock, cache_dir: Path, calendar: Js
 
 
 def append_mainchat_channel(channels: list[Channel], channel_id: int | None, *, clock: Clock = now_pt) -> None:
-    """Append the Hermes mainchat sender when ``MAINCHAT_BOT_TOKEN`` is set and the config supplies a channel id.
+    """Append the Hermes mainchat sender when a bot token is set and the config supplies a channel id.
 
-    The channel id is the configured Discord channel (``cfg.discord.channel_id``); only the token comes from the
-    environment. Left unwired otherwise, so alerts with a pending ``mainchat`` state stay pending (fail closed, AS §9).
+    The token is ``MAINCHAT_BOT_TOKEN``, falling back to ``DISCORD_BOT_TOKEN`` for single-bot deployments. The channel
+    id is the configured Discord channel (``cfg.discord.channel_id``); only the token comes from the environment, and
+    it is never logged. Left unwired otherwise, so alerts with a pending ``mainchat`` state stay pending (fail closed,
+    AS §9).
     """
-    token = os.environ.get("MAINCHAT_BOT_TOKEN") or None
+    token = os.environ.get("MAINCHAT_BOT_TOKEN") or os.environ.get("DISCORD_BOT_TOKEN") or None
     if token and channel_id:
         channels.append(HermesMainchatChannel(token, channel_id, clock=clock))  # type: ignore[arg-type]
 

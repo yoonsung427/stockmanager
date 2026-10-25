@@ -61,11 +61,43 @@ def test_mainchat_not_wired_without_token_and_channel(
     monkeypatch: pytest.MonkeyPatch, token: str | None, channel_id: int | None
 ) -> None:
     monkeypatch.delenv("MAINCHAT_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
     if token:
         monkeypatch.setenv("MAINCHAT_BOT_TOKEN", token)
     channels: list[Channel] = []
     append_mainchat_channel(channels, channel_id)
     assert channels == []
+
+
+def test_mainchat_falls_back_to_discord_bot_token(monkeypatch: pytest.MonkeyPatch, clock: FixedClock) -> None:
+    fallback = "discord-fallback-token"
+    monkeypatch.delenv("MAINCHAT_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", fallback)
+    channels: list[Channel] = []
+    append_mainchat_channel(channels, CHANNEL_ID, clock=clock)
+    assert [c.name for c in channels] == ["mainchat"]
+    assert fallback not in repr(channels[0])
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"id": "9002"})
+
+    chan = channels[0]
+    assert isinstance(chan, HermesMainchatChannel)
+    chan._client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert chan.send(Rendered("hi"), nonce="n").channel == "mainchat"
+    assert seen[0].headers["authorization"] == f"Bot {fallback}"
+
+    # MAINCHAT_BOT_TOKEN still wins when both are set.
+    monkeypatch.setenv("MAINCHAT_BOT_TOKEN", TOKEN)
+    both: list[Channel] = []
+    append_mainchat_channel(both, CHANNEL_ID, clock=clock)
+    chan2 = both[0]
+    assert isinstance(chan2, HermesMainchatChannel)
+    chan2._client = httpx.Client(transport=httpx.MockTransport(handler))
+    chan2.send(Rendered("hi"), nonce="n2")
+    assert seen[-1].headers["authorization"] == f"Bot {TOKEN}"
 
 
 def test_pending_mainchat_alert_drains_on_first_run_after_wiring(store: FileStore, clock: FixedClock) -> None:
