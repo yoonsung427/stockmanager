@@ -63,5 +63,7 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "-m 'not benchmark'"
+markers = ["benchmark: Q1 classifier benchmark rerun (needs the frozen corpus and a live endpoint); run with -m benchmark"]
 # tests/sim and tests/integration keep the TS-spec file names (fault_injection.py, ...), so collect them by directory.
 python_files = ["test_*.py", "tests/sim/*.py", "tests/integration/*.py"]
