@@ -14,12 +14,14 @@ from collections import defaultdict, deque
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import discord
 
 from stockmanager.commands import CommandContext, Sender, run_command
 from stockmanager.commands.handlers import UNRECOGNIZED
 from stockmanager.notify import enqueue, rejected_control_message
+from stockmanager.notify.components import click_command, parse_custom_id
 from stockmanager.notify.deliver import Channel, deliver_pending
 from stockmanager.store import FileStore, fsutil
 from stockmanager.store.lock import Clock, now_pt
@@ -149,6 +151,54 @@ class PortfolioBot(discord.Client):
             await asyncio.to_thread(enqueue, rejected_control_message(key), self._store)
         await self._reply(message, reply)
         self._write_cursor(_channel_key(message), message.id)
+
+    # -- proposal buttons (v2 H4) ------------------------------------------------------------------------------------
+
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        """A click on a proposal embed's VETO / APPROVE button: the same handler as the typed command (v2 H4).
+
+        Anything that is not one of our buttons is left to discord.py. The reply is ephemeral, so a rejection never
+        lands in the shared channel, and it is always sent: a click is never silently dropped.
+        """
+        if interaction.type is not discord.InteractionType.component:
+            return
+        data = cast("dict[str, Any]", interaction.data or {})
+        custom_id = str(data.get("custom_id", ""))
+        if parse_custom_id(custom_id) is None:
+            return
+        await interaction.response.defer(ephemeral=True)
+        reply = await self.handle_component(
+            custom_id, str(interaction.user.id), str(interaction.id), interaction.created_at
+        )
+        await interaction.followup.send(
+            reply or UNRECOGNIZED, ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
+        )
+
+    async def handle_component(
+        self, custom_id: str, user_id: str, interaction_id: str, at: datetime, reason: str | None = None
+    ) -> str | None:
+        """Resolve one button click as ``commands.run_command`` would its typed twin; ``None`` if not our button.
+
+        ``sender`` is ``discord`` with the clicker's ID and the click's own timestamp (TS D11), so ``authorize()``
+        rejects a non-allow-list clicker with the identical reason text as a typed command, and the proposal's
+        transition row records ``discord:<user_id>``, ``at`` and ``reason`` (``VETO`` only; the default cause is
+        "vetoed"). The same rate limit and rejection alert apply as for typed commands.
+
+        Bot-down ruling: the buttons are persistent (see ``notify.components``). A click made while no bot is
+        running is not queued or replayed; Discord shows the clicker its own failure notice and nothing changes.
+        """
+        parsed = parse_custom_id(custom_id)
+        if parsed is None:
+            return None
+        action, proposal_id = parsed
+        sender = Sender("discord", user_id, interaction_id, at)
+        now = self._clock()
+        if self._is_rate_limited(user_id, now):
+            return "❌ Rate limited: too many commands, try again in a minute."
+        reply = await asyncio.to_thread(run_command, click_command(action, proposal_id, reason), sender, self._ctx)
+        if reply.startswith("❌") and self._should_alert_rejection(user_id, now):
+            await asyncio.to_thread(enqueue, rejected_control_message(user_id), self._store)
+        return reply
 
     @staticmethod
     async def _reply(message: discord.Message, text: str) -> None:

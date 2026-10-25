@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from stockmanager.notify.outbox import Alert, enqueue
-from stockmanager.notify.templates import reconcile_divergence, run_skipped_busy
+from stockmanager.notify.outbox import Alert, enqueue, raised_dedupe_keys
+from stockmanager.notify.templates import reconcile_divergence, run_skipped_busy, stale_price_refused
 from stockmanager.store import FileStore
 
 MAX_SIGNATURE_CHARS = 200
@@ -32,3 +32,11 @@ def emit_run_skipped_busy(store: FileStore, job: str, slot: str) -> None:
 def emit_reconcile_divergence(store: FileStore, divergences: Sequence[str]) -> None:
     """A job halted because the books disagree with themselves (TS NN-26 / NN-41)."""
     _emit(reconcile_divergence("; ".join(divergences)[:MAX_SIGNATURE_CHARS]), store)
+
+
+def emit_stale_price_refused(store: FileStore, job: str, tickers: Sequence[str]) -> None:
+    """A fill was refused for stale prices (v2 H3); info only, one alert per job per day however long the spell."""
+    alert = stale_price_refused(job, list(tickers), store.clock().date())
+    if alert.dedupe_key in raised_dedupe_keys(store.root):
+        return  # already told today, even if delivered since: the dedupe ledger frees a key on delivery
+    _emit(alert, store)
